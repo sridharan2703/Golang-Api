@@ -1,79 +1,76 @@
 name: Deploy Development to Production
 
 # REQUIRED for pushing git tags
-
 permissions:
-contents: write
+  contents: write
 
 on:
-push:
-branches:
-- development
+  push:
+    branches:
+      - development
 
 jobs:
-deploy:
-runs-on: self-hosted
+  deploy:
+    runs-on: self-hosted
 
-```
-steps:
-  - name: Checkout Code
-    uses: actions/checkout@v3
-    with:
-      fetch-depth: 0   # required for tags
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0   # required for tags
 
-  - name: Auto Increment Version
-    id: version
-    run: |
-      echo "🔍 Fetching existing tags..."
-      git fetch --tags
+      - name: Auto Increment Version
+        id: version
+        run: |
+          echo "🔍 Fetching existing tags..."
+          git fetch --tags
 
-      LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
-      echo "🕒 Last version: $LAST_TAG"
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
+          echo "🕒 Last version: $LAST_TAG"
 
-      IFS='.' read -r MAJOR MINOR PATCH <<< "${LAST_TAG#v}"
-      PATCH=$((PATCH + 1))
-      NEW_TAG="v$MAJOR.$MINOR.$PATCH"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "${LAST_TAG#v}"
+          PATCH=$((PATCH + 1))
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
-      echo "🚀 New version: $NEW_TAG"
-      echo "new_version=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "🚀 New version: $NEW_TAG"
+          echo "new_version=$NEW_TAG" >> $GITHUB_OUTPUT
 
-  - name: Create & Push Lightweight Git Tag
-    run: |
-      NEW_VERSION="${{ steps.version.outputs.new_version }}"
-      echo "🏷 Creating lightweight tag: $NEW_VERSION"
+      - name: Create & Push Lightweight Git Tag
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          echo "🏷 Creating lightweight tag: $NEW_VERSION"
 
-      git tag "$NEW_VERSION"
-      git push origin "$NEW_VERSION"
+          git tag "$NEW_VERSION"
+          git push origin "$NEW_VERSION"
 
-  - name: Deploy on Production
-    run: |
-      NEW_VERSION="${{ steps.version.outputs.new_version }}"
-      echo "🌀 Deploying version $NEW_VERSION ..."
+      - name: Deploy on Production
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          echo "🌀 Deploying version $NEW_VERSION ..."
 
-      cd /home/user/hr_github
-      git fetch --all
-      git reset --hard origin/development
-      git pull origin development
+          cd /home/user/hr_github
+          git fetch --all
+          git reset --hard origin/development
+          git pull origin development
 
-      echo "📦 Cleaning dependencies..."
-      /usr/local/go/bin/go mod tidy
-      /usr/local/go/bin/go mod download
+          echo "📦 Cleaning dependencies..."
+          /usr/local/go/bin/go mod tidy
+          /usr/local/go/bin/go mod download
 
-      echo "📦 Building Go project ($NEW_VERSION)..."
-      /usr/local/go/bin/go build -o hrserver main.go
+          echo "📦 Building Go project ($NEW_VERSION)..."
+          /usr/local/go/bin/go build -o hrserver main.go
 
-      echo "🔍 Checking running server on port 2703..."
-      PID=$(lsof -t -i:2703 || echo "")
+          echo "🔍 Checking running server on port 2703..."
+          PID=$(lsof -t -i:2703 || echo "")
 
-      if [ ! -z "$PID" ]; then
-        echo "🔪 Killing process $PID ..."
-        kill -9 $PID
-      else
-        echo "⚠ No process running on port 2703"
-      fi
+          if [ ! -z "$PID" ]; then
+            echo "🔪 Killing process $PID ..."
+            kill -9 $PID
+          else
+            echo "⚠ No process running on port 2703"
+          fi
 
-      echo "🚀 Starting new server..."
-      nohup ./hrserver > hr.log 2>&1 &
+          echo "🚀 Starting new server..."
+          nohup ./hrserver > hr.log 2>&1 &
 
-      echo "🎉 Deployment complete! Version: $NEW_VERSION"
-```
+          echo "🎉 Deployment complete! Version: $NEW_VERSION"

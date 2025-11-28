@@ -8,7 +8,7 @@ package main
 import (
 	"Hrmodule/mainroutes"
 )
-
+//hi
 // new
 // main is the entry point of the application.
 // It calls Registerroutes to bind API endpoints and start the server.

@@ -1,5 +1,7 @@
 name: Deploy Development to Production
-
+# REQUIRED for pushing git tags
+permissions:
+  contents: write
 on:
   push:
     branches:

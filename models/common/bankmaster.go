@@ -1,5 +1,5 @@
 // Package modelscommon contains structs and queries for Bank.
-
+//
 // --- Creator's Info ---
 // Creator: Rovita
 // Created On: 18-11-2025

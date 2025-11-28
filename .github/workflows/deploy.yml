@@ -7,27 +7,24 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Add SSH Key
-        uses: webfactory/ssh-agent@v0.7.0
-        with:
-          ssh-private-key: ${{ secrets.DEPLOY_KEY }}
-
-      - name: Deploy to Production Server
+      - name: Deploy on Production
         run: |
-          ssh -o StrictHostKeyChecking=no user@10.24.5.66 "
-            cd /home/user/hr_github &&
-            git fetch --all &&
-            git reset --hard origin/development &&
-            git pull origin development &&
+          echo "🌀 Pulling latest development branch..."
+          cd /home/user/hr_github
+          git fetch --all
+          git reset --hard origin/development
+          git pull origin development
 
-            /usr/local/go/bin/go build -o hrserver main.go &&
-            sudo systemctl restart hr.service &&
-            echo '✅ Deployment to production complete!'
-          "
+          echo "📦 Building Go project..."
+          /usr/local/go/bin/go build -o hrserver main.go
 
+          echo "🔄 Restarting HR service..."
+          sudo systemctl restart hr.service
+
+          echo "✅ Deployment complete!"

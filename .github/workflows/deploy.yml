@@ -17,7 +17,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0   # required for tags
+          fetch-depth: 0  # required for tags
 
       - name: Auto Increment Version
         id: version
@@ -65,12 +65,12 @@ jobs:
 
           if [ ! -z "$PID" ]; then
             echo "🔪 Killing process $PID ..."
-            kill -9 $PID
+            kill -9 $PID || true
           else
             echo "⚠ No process running on port 2703"
           fi
 
-          echo "🚀 Starting new server..."
+          echo "🚀 Starting new server in background..."
           nohup ./hrserver > hr.log 2>&1 &
 
           echo "🎉 Deployment complete! Version: $NEW_VERSION"

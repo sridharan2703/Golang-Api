@@ -47,7 +47,7 @@ jobs:
           git tag $NEW_VERSION
           git push origin $NEW_VERSION
 
-      - name: Deploy on Production
+            - name: Deploy on Production
         run: |
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
           echo "🌀 Deploying version $NEW_VERSION ..."
@@ -57,14 +57,24 @@ jobs:
           git reset --hard origin/development
           git pull origin development
 
-          echo "📦 Cleaning existing dependencies..."
+          echo "📦 Cleaning dependencies..."
           /usr/local/go/bin/go mod tidy
           /usr/local/go/bin/go mod download
 
           echo "📦 Building Go project ($NEW_VERSION)..."
           /usr/local/go/bin/go build -o hrserver main.go
 
-          echo "🔄 Restarting HR service..."
-          sudo systemctl restart hr.service
+          echo "🔍 Checking running server on port 2703..."
+          PID=$(lsof -t -i:2703 || echo "")
+
+          if [ ! -z "$PID" ]; then
+            echo "🔪 Killing process $PID ..."
+            kill -9 $PID
+          else
+            echo "⚠ No process running on port 2703"
+          fi
+
+          echo "🚀 Starting new server..."
+          nohup ./hrserver > hr.log 2>&1 &
 
           echo "🎉 Deployment complete! Version: $NEW_VERSION"

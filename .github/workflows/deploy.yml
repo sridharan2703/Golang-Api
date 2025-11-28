@@ -13,13 +13,17 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v3
 
-      - name: Deploy on Production
+           - name: Deploy on Production
         run: |
           echo "🌀 Pulling latest development branch..."
           cd /home/user/hr_github
           git fetch --all
           git reset --hard origin/development
           git pull origin development
+
+          echo "📦 Installing Go dependencies..."
+          /usr/local/go/bin/go mod tidy
+          /usr/local/go/bin/go mod download
 
           echo "📦 Building Go project..."
           /usr/local/go/bin/go build -o hrserver main.go

@@ -66,11 +66,23 @@ jobs:
           if [ ! -z "$PID" ]; then
             echo "🔪 Killing process $PID ..."
             kill -9 $PID || true
+            sleep 3  # Wait for port to be fully released
           else
             echo "⚠ No process running on port 2703"
           fi
 
           echo "🚀 Starting new server in background..."
           nohup ./hrserver > hr.log 2>&1 &
+          disown  # Critical: detach process from shell
+          
+          sleep 2  # Give server time to start
+          
+          # Verify the server started successfully
+          NEW_PID=$(lsof -t -i:2703 || echo "")
+          if [ ! -z "$NEW_PID" ]; then
+            echo "✅ Server started successfully with PID: $NEW_PID"
+          else
+            echo "❌ Warning: Could not verify server is running on port 2703"
+          fi
 
           echo "🎉 Deployment complete! Version: $NEW_VERSION"

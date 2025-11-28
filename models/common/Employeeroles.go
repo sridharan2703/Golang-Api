@@ -6,37 +6,40 @@
 //
 // Created On:30-07-2025
 //
-// Last Modified By: Sivabala
+// Last Modified By: Sridharan
 //
-// Last Modified Date: 30-07-2025
+// Last Modified Date: 10-11-2025
 //
 // Path:Login Page
 package modelscommon
 
 import (
+	//	modelstable "Hrmodule/models/tables"
 	"database/sql"
 	"fmt"
 
 	_ "github.com/lib/pq"
 )
 
-const MyQueryDefaultRoleName = `
-SELECT B.USERID, A.USERNAME, D.ROLENAME, B.IsActive 
-FROM USERMASTER A 
-JOIN ORGUNITUSERMAPPING B ON A.USERID = B.USERID
-JOIN ORGUNITROLEMAPPING C ON B.RoleMapId = C.ROLEMAPID
-JOIN ROLEMASTER D ON C.ROLEID = D.ROLEID
-WHERE A.UserName = $1
-AND B.IsActive IN ('1','0')
-ORDER BY B.UPDATEDON ASC
+var MyQueryDefaultRoleName = `
+SELECT A.Employeeid as UserID,loginname as Username,
+    B.campuscode || ' ' ||
+    CASE WHEN A.sectionid IS NOT NULL THEN D.sectioncode ELSE A.departmentcode END || ' ' || 
+    C.rolename AS RoleName
+FROM humanresources.employeerolemapping A
+JOIN humanresources.campus B ON A.campusid = B.id
+JOIN meivan.rolemaster C ON A.roleid = C.id
+LEFT JOIN humanresources.section D ON A.sectionid = D.id
+join humanresources.employeebasicinfo e
+on A.employeeid=e.employeeid
+WHERE e.loginname = $1
 `
 
 // DefaultRoleNamestructure defines the structure of DefaultRoleName
 type DefaultRoleNamestructure struct {
-	USERID   *string `json:"UserID"`
-	USERNAME *string `json:"Username"`
-	ROLENAME *string `json:"RoleName"`
-	IsActive *string `json:"IsActive"`
+	UserID   *string `json:"UserID"`
+	Username *string `json:"Username"`
+	RoleName *string `json:"RoleName"`
 }
 
 // RetrieveDefaultRoleName scans rows into DefaultRoleNamestructure slice
@@ -46,10 +49,9 @@ func RetrieveDefaultRoleName(rows *sql.Rows) ([]DefaultRoleNamestructure, error)
 	for rows.Next() {
 		var DRN DefaultRoleNamestructure
 		err := rows.Scan(
-			&DRN.USERID,
-			&DRN.USERNAME,
-			&DRN.ROLENAME,
-			&DRN.IsActive,
+			&DRN.UserID,
+			&DRN.Username,
+			&DRN.RoleName,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("error scanning row: %v", err)

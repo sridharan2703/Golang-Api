@@ -1,13 +1,25 @@
-
+// Package credentials contains data structures and database access logic.
+//
+// --- Creator's Info ---
+//
+// Creator: Sridharan
+//
+// Created On:30-07-2025
+//
+// Last Modified By: Sivabala
+//
+// Last Modified Date: 30-07-2025
+//
+// Path:Login Page
 package credentials
 
 import (
 	"database/sql"
 	"fmt"
-	"log"
 	"os"
 	"strings"
 
+	_ "github.com/denisenkom/go-mssqldb" // Add MSSQL driver
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -21,7 +33,7 @@ func init() {
 }
 
 // getDBConnectionString constructs and verifies a database connection string
-// for the given driver (e.g., "postgres" or "mysql"). It opens and pings the
+// for the given driver (e.g., "postgres", "mysql", or "mssql"). It opens and pings the
 // database to ensure the connection is valid. It returns the connection string
 // or panics on failure.
 func getDBConnectionString(driver, server, user, password, database, port string) string {
@@ -34,6 +46,14 @@ func getDBConnectionString(driver, server, user, password, database, port string
 			server, user, password, database, port)
 	case "mysql":
 		connStr = fmt.Sprintf("%s:%s@tcp(%s:%s)/%s", user, password, server, port, database)
+	case "mssql":
+		// MSSQL connection string format
+		connStr = fmt.Sprintf("server=%s;user id=%s;password=%s;database=%s;port=%s;encrypt=disable",
+			server, user, password, database, port)
+	case "sqlserver":
+		// Alternative format for SQL Server
+		connStr = fmt.Sprintf("sqlserver://%s:%s@%s:%s?database=%s&encrypt=disable",
+			user, password, server, port, database)
 	default:
 		panic("Unsupported DB driver: " + driver)
 	}
@@ -51,10 +71,22 @@ func getDBConnectionString(driver, server, user, password, database, port string
 	return connStr
 }
 
-// logMaskedConnection masks password and logs the connection string
-func logMaskedConnection(connStr, password, dbType string) {
-	safeConnStr := strings.Replace(connStr, password, "****", 1)
-	log.Printf("%s connection: %s", dbType, safeConnStr)
+// getPostgresConnectionString constructs and verifies a Postgres connection string
+func getPostgresConnectionStringforpostgre(server, user, password, database, port, schema string) string {
+	connStr := fmt.Sprintf("host=%s user=%s password=%s dbname=%s port=%s sslmode=disable search_path=%s",
+		server, user, password, database, port, schema)
+
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		panic("Failed to open Postgres connection: " + err.Error())
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		panic("Postgres connection failed: " + err.Error())
+	}
+
+	return connStr
 }
 
 // logFullyMaskedConnection masks all sensitive information in connection string
@@ -67,50 +99,44 @@ func logFullyMaskedConnection(connStr, password, user, host, database, dbType st
 	safeConnStr = strings.Replace(safeConnStr, host, "****", -1)
 	safeConnStr = strings.Replace(safeConnStr, database, "****", -1)
 
-	log.Printf("%s connection: %s", dbType, safeConnStr)
 }
 
+// GetGnanaThalamSchemaConnection returns a Postgres connection string for a given schema
+func GetGnanaThalamSchemaConnection(schema string) string {
+	server := os.Getenv("server_gnana")
+	user := os.Getenv("user_gnana")
+	password := os.Getenv("password_gnana")
+	database := os.Getenv("database_gnana")
+	port := os.Getenv("port_gnana")
+
+	connStr := getPostgresConnectionStringforpostgre(server, user, password, database, port, schema)
+	logFullyMaskedConnection(connStr, password, user, server, database, "Postgres")
+
+	return connStr
+}
+
+// ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Postgres database
 // Getdatabasehr returns Postgres connection string
 func Getdatabasehr() string {
-	serverhr := os.Getenv("serverhr")
-	userhr := os.Getenv("userIdhr")
-	passwordhr := os.Getenv("passwordhr")
-	databasehr := os.Getenv("databasehr")
-	porthr := os.Getenv("porthr")
-
-	connStr := getDBConnectionString("postgres", serverhr, userhr, passwordhr, databasehr, porthr)
-
-	// Choose one:
-	// logMaskedConnection(connStr, password, "Postgres")  // Only mask password
-	logFullyMaskedConnection(connStr, passwordhr, userhr, serverhr, databasehr, "Postgres") // Mask all sensitive info
-
-	return connStr
+	return GetGnanaThalamSchemaConnection("humanresources")
 }
 
-// Getdatabasehr returns Postgres connection string
+// ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Getdatabasemeivan returns Postgres connection string
 func Getdatabasemeivan() string {
-	serverm := os.Getenv("serverm")
-	userm := os.Getenv("userIdm")
-	passwordm := os.Getenv("passwordm")
-	databasem := os.Getenv("databasem")
-	portm := os.Getenv("portm")
-	log.Println(serverm)
-	log.Println(userm)
-	log.Println(passwordm)
-	log.Println(databasem)
-	log.Println(portm)
-	connStr := getDBConnectionString("postgres", serverm, userm, passwordm, databasem, portm)
-
-	// Choose one:
-	// logMaskedConnection(connStr, password, "Postgres")  // Only mask password
-	logFullyMaskedConnection(connStr, passwordm, userm, serverm, databasem, "Postgres") // Mask all sensitive info
-
-	return connStr
+	return GetGnanaThalamSchemaConnection("Meivan")
 }
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// GetdatabaseWF_officeorder returns Postgres connection string
 
+func GetdatabaseWF_officeorder() string {
+	return GetGnanaThalamSchemaConnection("WF_Integration")
+}
+
+// ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// 17 phpmyadmin
 // GetMySQLDatabase17 returns MySQL connection string
 func GetMySQLDatabase17() string {
 	host := os.Getenv("DB_HOST")
@@ -118,17 +144,15 @@ func GetMySQLDatabase17() string {
 	password := os.Getenv("DB_PASSWORD")
 	database := os.Getenv("DB_NAME")
 	port := os.Getenv("DB_PORT")
-	log.Println(host)
-	log.Println(user)
-	log.Println(password)
-	log.Println(database)
-	log.Println(port)
+
 	connStr := getDBConnectionString("mysql", host, user, password, database, port)
 	logFullyMaskedConnection(connStr, password, user, host, database, "MySQL")
 
 	return connStr
 }
 
+// 17 phpmyadmin
+// ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // GetMySQLDatabase17HR returns MySQL HR connection string
 func GetMySQLDatabase17HR() string {
 	host := os.Getenv("DB_HOST_HR")
@@ -139,6 +163,39 @@ func GetMySQLDatabase17HR() string {
 
 	connStr := getDBConnectionString("mysql", host, user, password, database, port)
 	logFullyMaskedConnection(connStr, password, user, host, database, "MySQL HR")
+
+	return connStr
+}
+
+// MSSQL
+// ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// GetTestdatabase15 returns a verified MSSQL connection string for
+// the test credentials with IITMAcademics database from environment variables
+func GetTestdatabase15() string {
+	server := os.Getenv("server1")
+	user := os.Getenv("userId1")
+	password := os.Getenv("password1")
+	database := os.Getenv("database1")
+	port := os.Getenv("port1")
+
+	connStr := getDBConnectionString("mssql", server, user, password, database, port)
+	logFullyMaskedConnection(connStr, password, user, server, database, "MSSQL")
+
+	return connStr
+}
+
+// ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// GetLivedatabase10 returns a verified MSSQL connection string for
+// the test credentials with IITMAcademics database from environment variables
+func GetLivedatabase10() string {
+	server := os.Getenv("server2")
+	user := os.Getenv("userId2")
+	password := os.Getenv("password2")
+	database := os.Getenv("database2")
+	port := os.Getenv("port2")
+
+	connStr := getDBConnectionString("mssql", server, user, password, database, port)
+	logFullyMaskedConnection(connStr, password, user, server, database, "MSSQL")
 
 	return connStr
 }

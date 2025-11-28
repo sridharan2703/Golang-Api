@@ -26,53 +26,126 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"time"
+	"strconv"
+	"strings"
 
 	_ "github.com/lib/pq"
 )
 
-// OTPDetails maps to otp_details table (without id, since it's auto-increment)
 type OTPDetails struct {
-	Username      string    `json:"username"`
-	MobileNo      int64     `json:"mobileno"`
-	OTP           int       `json:"otp"`
-	OTPSendOn     time.Time `json:"otpsendon"`
-	OTPVerifiedOn time.Time `json:"otpverifiedon"`
-	Status        int       `json:"status"`
-	Otpvalidtill  time.Time `json:"otpvalidtill"`
-	SessionID     string    `json:"session_id"` // <-- new field
-	Resend        int       `json:"Resend"`     // <-- new field
-	Token         string    `json:"token"`
+	Data string `json:"Data"`
 }
 
 // InsertOTPHandler inserts a new OTPDetails row
 func InsertOTPHandler(w http.ResponseWriter, r *http.Request) {
-	// Step 1: Parse request body
-	var req OTPDetails
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed, use POST", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Step 2: If token provided in body, inject into header
-	if req.Token != "" {
-		r.Header.Set("token", req.Token)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Unable to read body", http.StatusBadRequest)
+		return
+	}
+	defer r.Body.Close()
+
+	var req OTPDetails
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
 	}
 
-	// Step 3: Authenticate
+	parts := strings.Split(req.Data, "||")
+	if len(parts) != 2 {
+		http.Error(w, "Invalid Data format", http.StatusBadRequest)
+		return
+	}
+	pid := parts[0]
+	encryptedPart := parts[1]
+
+	key, err := utils.GetDecryptKey(pid)
+	if err != nil {
+		http.Error(w, "Decryption key fetch failed", http.StatusUnauthorized)
+		return
+	}
+
+	decryptedJSON, err := utils.DecryptAES(encryptedPart, key)
+	if err != nil {
+		http.Error(w, "Decryption failed", http.StatusUnauthorized)
+		return
+	}
+
+	var decryptedData map[string]interface{}
+	if err := json.Unmarshal([]byte(decryptedJSON), &decryptedData); err != nil {
+		http.Error(w, "Invalid decrypted data", http.StatusBadRequest)
+		return
+	}
+
+	token, ok := decryptedData["token"].(string)
+	if !ok || token == "" {
+		http.Error(w, "Token not found", http.StatusBadRequest)
+		return
+	}
+	r.Header.Set("token", token)
+
 	if !auth.HandleRequestfor_apiname_ipaddress_token(w, r) {
 		return
 	}
 
-	loggedHandler := auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Allow only POST
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		// ----------------------
+		// Extract fields safely
+		// ----------------------
+
+		// username
+		Username, ok := decryptedData["username"].(string)
+		if !ok || Username == "" {
+			http.Error(w, "missing 'username' in request data", http.StatusBadRequest)
 			return
 		}
 
-		// DB connection
+		// session_id
+
+		// mobileno INT64
+		var MobileNo int64
+		switch v := decryptedData["mobileno"].(type) {
+		case float64:
+			MobileNo = int64(v)
+		case string:
+			MobileNo, err = strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				http.Error(w, "invalid 'mobileno'", http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, "missing or invalid 'mobileno'", http.StatusBadRequest)
+			return
+		}
+
+		// otp INT
+		var OTP int
+		switch v := decryptedData["otp"].(type) {
+		case float64:
+			OTP = int(v)
+		case string:
+			OTP, err = strconv.Atoi(v)
+			if err != nil {
+				http.Error(w, "invalid 'otp'", http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, "missing or invalid 'otp'", http.StatusBadRequest)
+			return
+		}
+
+		// ----------------------
+		// Insert into DB
+		// ----------------------
 		connectionString := credentials.Getdatabasemeivan()
 		db, err := sql.Open("postgres", connectionString)
 		if err != nil {
@@ -81,7 +154,6 @@ func InsertOTPHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		defer db.Close()
 
-		// Insert query
 		query := `
 			INSERT INTO otp_details 
 			(username, mobileno, otp, otpsendon, status, otpvalidtill, session_id, resend)
@@ -91,10 +163,10 @@ func InsertOTPHandler(w http.ResponseWriter, r *http.Request) {
 
 		var id int
 		err = db.QueryRow(query,
-			req.Username,
-			req.MobileNo,
-			req.OTP,
-			req.SessionID,
+			Username,
+			MobileNo,
+			OTP,
+			pid,
 		).Scan(&id)
 
 		if err != nil {
@@ -102,31 +174,30 @@ func InsertOTPHandler(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		// Success response
 		resp := map[string]interface{}{
 			"message":    "OTP record inserted successfully",
 			"id":         id,
-			"session_id": req.SessionID,
+			"session_id": pid,
 		}
 
-		// Encrypt response
-		jsonResponse, err := json.MarshalIndent(resp, "", "    ")
-		if err != nil {
-			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
-			return
+		jsonResponse, _ := json.Marshal(resp)
+		encryptedResponse, _ := utils.EncryptAES(string(jsonResponse), key)
+
+		finalResp := map[string]string{
+			"Data": fmt.Sprintf("%s||%s", pid, encryptedResponse),
 		}
 
-		encrypted, err := utils.Encrypt(jsonResponse)
-		if err != nil {
-			http.Error(w, "Encryption failed", http.StatusInternalServerError)
-			return
-		}
+		auth.SaveResponseLog(
+			r,
+			finalResp,
+			http.StatusOK,
+			"application/json",
+			len(jsonResponse),
+			string(body),
+		)
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"Data": encrypted,
-		})
-	}))
+		json.NewEncoder(w).Encode(finalResp)
 
-	loggedHandler.ServeHTTP(w, r)
+	})).ServeHTTP(w, r)
 }

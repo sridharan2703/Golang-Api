@@ -6,11 +6,12 @@
 package main
 
 import (
-"Hrmodule/routes"
+	"Hrmodule/mainroutes"
 )
-//new
+
+// new
 // main is the entry point of the application.
 // It calls Registerroutes to bind API endpoints and start the server.
 func main() {
-	routes.Registerroutes()
+	mainroutes.Registerroutes()
 }

@@ -4,48 +4,53 @@
 //
 // Creator: Sridharan
 //
-// Created On:26-08-2025
+// Created On: 26-08-2025
 //
 // Last Modified By: Sridharan
 //
-// Last Modified Date: 26-08-2025
+// Last Modified Date: 25-10-2025
 package databasecommon
 
 import (
 	credentials "Hrmodule/dbconfig"
 	modelscommon "Hrmodule/models/common"
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"net/http"
+	"net/url"
+	"strings"
 )
 
-// Request body for InboxTasksRole
-type InboxTasksRoleRequest struct {
-	EmpID        string `json:"empid"`
-	AssignedRole string `json:"assignedrole"`
-}
-
 // InboxTasksRoleDatabase executes getinboxtasks_role
-func InboxTasksRoleDatabase(w http.ResponseWriter, r *http.Request) ([]modelscommon.InboxTasksRole, int, error) {
+func InboxTasksRoleDatabase(decryptedData map[string]interface{}) ([]modelscommon.InboxTasksRole, int, error) {
 	connectionString := credentials.Getdatabasemeivan()
 
 	db, err := sql.Open("postgres", connectionString)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("DB open error: %v", err), http.StatusInternalServerError)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("DB open error: %v", err)
 	}
 	defer db.Close()
 
-	// Decode request
-	var req InboxTasksRoleRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return nil, 0, fmt.Errorf("invalid request body: %v", err)
+	// Extract order_type_id from decrypted data
+	EmpID, ok := decryptedData["empid"].(string)
+	if !ok || EmpID == "" {
+		//return nil, 0, fmt.Errorf("missing 'empid' in request data")
 	}
-	defer r.Body.Close()
+
+	// Extract order_type_id from decrypted data
+	AssignedRole, ok := decryptedData["assignedrole"].(string)
+	if !ok || AssignedRole == "" {
+		//return nil, 0, fmt.Errorf("missing 'assignedrole' in request data")
+	}
+	// ✅ Decode any URL-encoded values like %20 → space
+	if decodedRole, err := url.QueryUnescape(AssignedRole); err == nil {
+		AssignedRole = decodedRole
+	} else {
+		// fallback: just replace %20 with space
+		AssignedRole = strings.ReplaceAll(AssignedRole, "%20", " ")
+	}
 
 	// Run query
-	rows, err := db.Query(modelscommon.MyQueryInboxTasksRole, req.EmpID, req.AssignedRole)
+	rows, err := db.Query(modelscommon.MyQueryInboxTasksRole, EmpID, AssignedRole)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error querying DB: %v", err)
 	}

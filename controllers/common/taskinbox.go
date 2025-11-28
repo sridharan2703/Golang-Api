@@ -17,8 +17,10 @@ import (
 	"Hrmodule/utils"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // APIResponseforInboxTasksRole standard response
@@ -30,7 +32,7 @@ type APIResponseforInboxTasksRole struct {
 
 // Token wrapper
 type InboxTasksRoleTokenRequest struct {
-	Token string `json:"token"`
+	Data string `json:"Data"`
 }
 
 // InboxTasksRole API
@@ -50,24 +52,59 @@ func InboxTasksRole(w http.ResponseWriter, r *http.Request) {
 
 	// Extract token
 	var req InboxTasksRoleTokenRequest
-	if err := json.Unmarshal(body, &req); err == nil && req.Token != "" {
-		r.Header.Set("token", req.Token)
+	
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
 	}
 
+	// 3️⃣ Split and decrypt
+	parts := strings.Split(req.Data, "||")
+	if len(parts) != 2 {
+		http.Error(w, "Invalid Data format", http.StatusBadRequest)
+		return
+	}
+	pid := parts[0]
+	encryptedPart := parts[1]
+
+	key, err := utils.GetDecryptKey(pid)
+	if err != nil {
+		http.Error(w, "Decryption key fetch failed", http.StatusUnauthorized)
+		return
+	}
+
+	decryptedJSON, err := utils.DecryptAES(encryptedPart, key)
+	if err != nil {
+		http.Error(w, "Decryption failed", http.StatusUnauthorized)
+		return
+	}
+
+	var decryptedData map[string]interface{}
+	if err := json.Unmarshal([]byte(decryptedJSON), &decryptedData); err != nil {
+		http.Error(w, "Invalid decrypted data", http.StatusBadRequest)
+		return
+	}
+
+	token, ok := decryptedData["token"].(string)
+	if !ok || token == "" {
+		http.Error(w, "Token not found", http.StatusBadRequest)
+		return
+	}
+	r.Header.Set("token", token)
 	// Authenticate
 	if !auth.HandleRequestfor_apiname_ipaddress_token(w, r) {
 		return
 	}
 
 	// Log + process
-	loggedHandler := auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := auth.IsValidIDFromRequest(r); err != nil {
 			http.Error(w, "Invalid TOKEN provided", http.StatusBadRequest)
 			return
 		}
 
 		// DB
-		data, total, err := database.InboxTasksRoleDatabase(w, r)
+		data, total, err := database.InboxTasksRoleDatabase(decryptedData)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -83,25 +120,36 @@ func InboxTasksRole(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		// JSON marshal
-		jsonResp, err := json.MarshalIndent(resp, "", "    ")
+		// 6️⃣ Marshal & encrypt before sending
+		responseJSON, err := json.Marshal(resp)
 		if err != nil {
-			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			http.Error(w, "Response marshal failed", http.StatusInternalServerError)
 			return
 		}
 
-		// Encrypt
-		enc, err := utils.Encrypt(jsonResp)
+		encryptedResponse, err := utils.EncryptAES(string(responseJSON), key)
 		if err != nil {
-			http.Error(w, "Encryption failed", http.StatusInternalServerError)
+			http.Error(w, "Response encryption failed", http.StatusInternalServerError)
 			return
 		}
 
-		// Send
+		finalResp := map[string]string{
+			"Data": fmt.Sprintf("%s||%s", pid, encryptedResponse),
+		}
+
+		// ✅ Save exactly what is sent to client
+		auth.SaveResponseLog(
+			r,
+			finalResp,          // only final response
+			http.StatusOK,      // status code
+			"application/json", // content type
+			len(responseJSON),  // size
+			string(body),       // original request
+		)
+
+		// ✅ Send to client
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"Data": enc,
-		})
-	}))
-	loggedHandler.ServeHTTP(w, r)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(finalResp)
+	})).ServeHTTP(w, r)
 }

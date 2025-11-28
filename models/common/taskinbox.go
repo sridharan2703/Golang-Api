@@ -20,26 +20,29 @@ import (
 
 const MyQueryInboxTasksRole = `
 SELECT *
-FROM public.getinboxtasks_role($1, $2)
+FROM getinboxtasks_role($1, $2)
 `
 
 // InboxTasksRole defines the structure for getinboxtasks_role output
 type InboxTasksRole struct {
-	TaskID        *string `json:"taskid"`
-	EmployeeID    *string `json:"employeeid"`
-	UpdatedOn     *string `json:"updatedon"`
-	UpdatedBy     *string `json:"updatedby"`
-	ActivitySeqNo *int    `json:"activityseqno"`
-	Remarks       *string `json:"remarks"`
-	ProcessName   *string `json:"processname"`
-	ProcessKey    *string `json:"processkeyword"`
-	Path          *string `json:"path"`
-	Component     *string `json:"component"`
-	CoverPageNo   *string `json:"coverpageno"`
-	ProcessID     *int    `json:"processid"`
-	Badge         *string `json:"badge"`
-	Priority      *string `json:"priority"`
-	Starred       *string `json:"starred"`
+	order_No       *string `json:"order_no"`
+	TaskID         *string `json:"taskid"`
+	EmployeeID     *string `json:"employeeid"`
+	Name           *string `json:"Name"`
+	Task_updatedon *string `json:"task_updatedon"`
+	UpdatedBy      *string `json:"updatedby"`
+	ActivitySeqNo  *int    `json:"activityseqno"`
+	Remarks        *string `json:"remarks"`
+	ProcessName    *string `json:"processname"`
+	ProcessKey     *string `json:"processkeyword"`
+	Path           *string `json:"path"`
+	Component      *string `json:"component"`
+	CoverPageNo    *string `json:"coverpageno"`
+	ReferenceNo    *string `json:"referenceno"`
+	ProcessID      *int    `json:"processid"`
+	Badge          *string `json:"badge"`
+	Priority       *string `json:"priority"`
+	Starred        *string `json:"starred"`
 }
 
 // RetrieveInboxTasksRole scans rows into []InboxTasksRole
@@ -49,9 +52,11 @@ func RetrieveInboxTasksRole(rows *sql.Rows) ([]InboxTasksRole, error) {
 	for rows.Next() {
 		var t InboxTasksRole
 		err := rows.Scan(
+			&t.order_No,
 			&t.TaskID,
 			&t.EmployeeID,
-			&t.UpdatedOn,
+			&t.Name,
+			&t.Task_updatedon,
 			&t.UpdatedBy,
 			&t.ActivitySeqNo,
 			&t.Remarks,
@@ -60,6 +65,7 @@ func RetrieveInboxTasksRole(rows *sql.Rows) ([]InboxTasksRole, error) {
 			&t.Path,
 			&t.Component,
 			&t.CoverPageNo,
+			&t.ReferenceNo,
 			&t.ProcessID,
 			&t.Badge,
 			&t.Priority,

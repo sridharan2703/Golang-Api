@@ -1,6 +1,4 @@
-// Package controllerslogin provides handlers for managing OTP-based
-// authentication, including secure validation of OTP records against
-// the database, session tracking, request validation, and encrypted API responses.
+// Package controllerslogin provides update the otp into database
 //
 // It ensures:
 //   - Secure request validation using token-based authentication
@@ -27,53 +25,123 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
+	"strings"
 
 	_ "github.com/lib/pq"
 )
 
 // ValidateOTPRequest represents the request body for OTP validation
 type ValidateOTPRequest struct {
-	Token     string `json:"token"`
-	Username  string `json:"username"`
-	MobileNo  int64  `json:"mobileno"`
-	SessionID string `json:"session_id"`
-	OTP       int    `json:"otp"`
+	Data string `json:"Data"`
 }
 
-// ValidateOTPHandler validates OTP using ValidCheck logic
 func ValidateOTPHandler(w http.ResponseWriter, r *http.Request) {
-	// Step 1: Parse request body
-	var req ValidateOTPRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed, use POST", http.StatusMethodNotAllowed)
 		return
 	}
 
-	// Step 2: If token provided in body, inject into header
-	if req.Token != "" {
-		r.Header.Set("token", req.Token)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "Unable to read body", http.StatusBadRequest)
+		return
 	}
+	defer r.Body.Close()
+
+	// Step 1: Parse request body
+	var req ValidateOTPRequest
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+
+	parts := strings.Split(req.Data, "||")
+	if len(parts) != 2 {
+		http.Error(w, "Invalid Data format", http.StatusBadRequest)
+		return
+	}
+	pid := parts[0]
+	encryptedPart := parts[1]
+
+	key, err := utils.GetDecryptKey(pid)
+	if err != nil {
+		http.Error(w, "Decryption key fetch failed", http.StatusUnauthorized)
+		return
+	}
+
+	decryptedJSON, err := utils.DecryptAES(encryptedPart, key)
+	if err != nil {
+		http.Error(w, "Decryption failed", http.StatusUnauthorized)
+		return
+	}
+
+	var decryptedData map[string]interface{}
+	if err := json.Unmarshal([]byte(decryptedJSON), &decryptedData); err != nil {
+		http.Error(w, "Invalid decrypted data", http.StatusBadRequest)
+		return
+	}
+
+	token, ok := decryptedData["token"].(string)
+	if !ok || token == "" {
+		http.Error(w, "Token not found", http.StatusBadRequest)
+		return
+	}
+	r.Header.Set("token", token)
 
 	// Step 3: Authenticate
 	if !auth.HandleRequestfor_apiname_ipaddress_token(w, r) {
 		return
 	}
 
-	loggedHandler := auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Step 4: Allow only POST
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+	auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		// username
+		Username, ok := decryptedData["username"].(string)
+		if !ok || strings.TrimSpace(Username) == "" {
+			http.Error(w, "missing or invalid 'username'", http.StatusBadRequest)
 			return
 		}
 
-		// Step 5: Validate required fields
-		if req.Username == "" || req.MobileNo == 0 || req.SessionID == "" || req.OTP == 0 {
-			http.Error(w, "username, mobileno, session_id and otp are required", http.StatusBadRequest)
+		// mobileno (int64)
+		var MobileNo int64
+		switch v := decryptedData["mobileno"].(type) {
+		case float64:
+			MobileNo = int64(v)
+		case string:
+			var err error
+			MobileNo, err = strconv.ParseInt(v, 10, 64)
+			if err != nil {
+				http.Error(w, "invalid 'mobileno'", http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, "missing or invalid 'mobileno'", http.StatusBadRequest)
 			return
 		}
 
-		// Step 6: DB Connection
+		// otp (int)
+		var OTP int
+		switch v := decryptedData["otp"].(type) {
+		case float64:
+			OTP = int(v)
+		case string:
+			var err error
+			OTP64, err := strconv.ParseInt(v, 10, 32)
+			if err != nil {
+				http.Error(w, "invalid 'otp'", http.StatusBadRequest)
+				return
+			}
+			OTP = int(OTP64)
+		default:
+			http.Error(w, "missing or invalid 'otp'", http.StatusBadRequest)
+			return
+		}
+
+		// Step 7: DB Connection
 		connectionString := credentials.Getdatabasemeivan()
 		db, err := sql.Open("postgres", connectionString)
 		if err != nil {
@@ -82,7 +150,7 @@ func ValidateOTPHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		defer db.Close()
 
-		// Step 7: Check ValidCheck logic with OTP validation
+		// Step 8: OTP Validation Query
 		checkQuery := `
 			SELECT 
 				id,
@@ -104,28 +172,40 @@ func ValidateOTPHandler(w http.ResponseWriter, r *http.Request) {
 		var id int
 		var validCheck string
 
-		err = db.QueryRow(checkQuery, req.Username, req.MobileNo, req.SessionID, req.OTP).Scan(&id, &validCheck)
+		err = db.QueryRow(checkQuery, Username, MobileNo, pid, OTP).Scan(&id, &validCheck)
 
 		if err != nil {
 			if err == sql.ErrNoRows {
-				// No matching record found
 				resp := map[string]interface{}{
 					"success":    false,
-					"message":    "Invalid OTP or OTP not found",
+					"message":    "Invalid OTP or OTP expired",
 					"validcheck": "0",
 				}
-				sendEncryptedResponse(w, resp)
+
+				// Encrypt response
+				jsonResponse, _ := json.Marshal(resp)
+				encryptedResponse, _ := utils.EncryptAES(string(jsonResponse), key)
+
+				finalResp := map[string]string{
+					"Data": fmt.Sprintf("%s||%s", pid, encryptedResponse),
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(finalResp)
 				return
 			}
+
 			http.Error(w, "Database error: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Step 8: Check if validcheck = 1 (needs update)
+		// -----------------------------
+		// OTP Valid → Update status
+		// -----------------------------
 		if validCheck == "1" {
-			// Update otpverifiedon and status
+
 			updateQuery := `
-				UPDATE otp_details 
+				UPDATE otp_details
 				SET otpverifiedon = NOW(), status = 1
 				WHERE id = $1
 			`
@@ -136,50 +216,33 @@ func ValidateOTPHandler(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 
-			// Success response
 			resp := map[string]interface{}{
 				"success":    true,
 				"message":    "OTP verified successfully",
-				"validcheck": "1",
-				"username":   req.Username,
-				"mobileno":   req.MobileNo,
-				"session_id": req.SessionID,
+				"id":         id,
+				"session_id": pid,
 			}
-			sendEncryptedResponse(w, resp)
-		} else {
-			// validcheck = 0, no update needed
-			resp := map[string]interface{}{
-				"success":    false,
-				"message":    "OTP expired or invalid",
-				"validcheck": "0",
+
+			jsonResponse, _ := json.Marshal(resp)
+			encryptedResponse, _ := utils.EncryptAES(string(jsonResponse), key)
+
+			finalResp := map[string]string{
+				"Data": fmt.Sprintf("%s||%s", pid, encryptedResponse),
 			}
-			sendEncryptedResponse(w, resp)
+
+			auth.SaveResponseLog(
+				r,
+				finalResp,
+				http.StatusOK,
+				"application/json",
+				len(jsonResponse),
+				string(body),
+			)
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(finalResp)
+			return
 		}
-	}))
 
-	// Run the logged handler
-	loggedHandler.ServeHTTP(w, r)
-}
-
-// Helper function to send encrypted response
-func sendEncryptedResponse(w http.ResponseWriter, resp map[string]interface{}) {
-	// Marshal to JSON
-	jsonResponse, err := json.MarshalIndent(resp, "", "    ")
-	if err != nil {
-		http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
-		return
-	}
-
-	// Encrypt
-	encrypted, err := utils.Encrypt(jsonResponse)
-	if err != nil {
-		http.Error(w, "Encryption failed", http.StatusInternalServerError)
-		return
-	}
-
-	// Send encrypted response
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"Data": encrypted,
-	})
+	})).ServeHTTP(w, r)
 }

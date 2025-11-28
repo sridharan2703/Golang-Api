@@ -16,10 +16,12 @@ import (
 	"Hrmodule/auth"
 	database "Hrmodule/database/common"
 	"Hrmodule/utils"
-	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strings"
 )
 
 // APIResponseforDefaultRoleName defines the standard structure of the API response.
@@ -31,8 +33,7 @@ type APIResponseforDefaultRoleName struct {
 
 // Struct for request body (for token injection + flexibility for other fields later)
 type DefaultRoleNameRequest struct {
-	Token string `json:"token"`
-	// Add more request params here if needed in future
+	Data string `json:"Data"`
 }
 
 // DefaultRoleName handles the HTTP POST request to fetch DefaultRoleName data for Employees.
@@ -49,21 +50,68 @@ func DefaultRoleName(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Unable to read request body", http.StatusBadRequest)
 		return
 	}
-	r.Body = io.NopCloser(bytes.NewBuffer(body)) // restore for downstream
+	defer r.Body.Close()
 
 	var req DefaultRoleNameRequest
-	if err := json.Unmarshal(body, &req); err == nil && req.Token != "" {
-		// Step 2: Inject token into header for compatibility with existing validation
-		r.Header.Set("token", req.Token)
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("Error unmarshalling JSON: %v", err)
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
 	}
 
-	// Step 3: Authenticate
+	// 3. Decrypt Data and Extract Token
+	parts := strings.Split(req.Data, "||")
+	if len(parts) != 2 {
+		log.Printf("Invalid data format")
+		http.Error(w, "Invalid Data format", http.StatusBadRequest)
+		return
+	}
+
+	pid := parts[0]
+	encryptedPart := parts[1]
+
+	// Get decryption key from database
+	key, err := utils.GetDecryptKey(pid)
+	if err != nil {
+		log.Printf("Key fetch failed: %v", err)
+		http.Error(w, "Decryption failed", http.StatusUnauthorized)
+		return
+	}
+
+	// Decrypt the payload
+	decryptedJSON, err := utils.DecryptAES(encryptedPart, key)
+	if err != nil {
+		log.Printf("Decryption error: %v", err)
+		http.Error(w, "Decryption failed", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse decrypted JSON to get token
+	var decryptedData map[string]interface{}
+	if err := json.Unmarshal([]byte(decryptedJSON), &decryptedData); err != nil {
+		log.Printf("Invalid decrypted JSON: %v", err)
+		http.Error(w, "Invalid decrypted data", http.StatusBadRequest)
+		return
+	}
+
+	token, ok := decryptedData["token"].(string)
+	if !ok || token == "" {
+		log.Printf("Token not found in decrypted data")
+		http.Error(w, "Token not found", http.StatusBadRequest)
+		return
+	}
+
+	// 4. Set Token Header for Authentication
+	r.Header.Set("token", token)
+
+	// 5. Authentication Check
 	if !auth.HandleRequestfor_apiname_ipaddress_token(w, r) {
 		return
 	}
 
 	// Step 4: Logging middleware
-	loggedHandler := auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 
 		// Step 5: Validate token
 		if err := auth.IsValidIDFromRequest(r); err != nil {
@@ -72,7 +120,7 @@ func DefaultRoleName(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Step 6: DB query
-		DefaultRoleNameData, totalCount, err := database.DefaultRoleNamedatabase(w, r)
+		DefaultRoleNameData, totalCount, err := database.DefaultRoleNamedatabase(decryptedData)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -89,26 +137,36 @@ func DefaultRoleName(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Step 8: Marshal to JSON
-		jsonResponse, err := json.MarshalIndent(response, "", "    ")
+		responseJSON, err := json.MarshalIndent(response, "", "  ")
+
 		if err != nil {
-			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			http.Error(w, "Response marshal failed", http.StatusInternalServerError)
 			return
 		}
 
-		// Step 9: Encrypt
-		encrypted, err := utils.Encrypt(jsonResponse)
+		encryptedResponse, err := utils.EncryptAES(string(responseJSON), key)
 		if err != nil {
-			http.Error(w, "Encryption failed", http.StatusInternalServerError)
+			http.Error(w, "Response encryption failed", http.StatusInternalServerError)
 			return
 		}
 
-		// Step 10: Send response
+		finalResp := map[string]string{
+			"Data": fmt.Sprintf("%s||%s", pid, encryptedResponse),
+		}
+
+		// ✅ Save exactly what is sent to client
+		auth.SaveResponseLog(
+			r,
+			finalResp,          // only final response
+			http.StatusOK,      // status code
+			"application/json", // content type
+			len(responseJSON),  // size
+			string(body),       // original request
+		)
+
+		// ✅ Send to client
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"Data": encrypted,
-		})
-	}))
-
-	// Step 11: Execute with logging
-	loggedHandler.ServeHTTP(w, r)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(finalResp)
+	})).ServeHTTP(w, r)
 }

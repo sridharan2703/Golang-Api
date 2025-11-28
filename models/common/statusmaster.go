@@ -16,11 +16,11 @@ import (
 	"fmt"
 )
 
-const MyQueryStatusMaster = `
+var MyQueryStatusMaster = (`
 SELECT statusid, statusdescription
-FROM statusmaster
+FROM meivan.statusmaster
 WHERE statusname = $1
-`
+`)
 
 // StatusMaster defines structure for statusmaster table
 type StatusMaster struct {

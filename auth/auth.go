@@ -22,31 +22,28 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
-
-	_ "github.com/go-sql-driver/mysql" // MySQL driver
 )
 
-// IsValid_IDFromRequest checks if the "token" query parameter is valid (alphanumeric only).
-//
-// Parameters:
-//   - r: The HTTP request to extract and validate the "token" from.
-//
-// Returns:
-//   - An error if the token contains invalid characters, otherwise nil.
-// func IsValid_IDFromRequest(r *http.Request) error {
-// 	idStr := r.URL.Query().Get("token")
-
-// 	// Check for invalid characters
-// 	for _, char := range idStr {
-// 		if !unicode.IsLetter(char) && !unicode.IsDigit(char) {
-// 			return errors.New("invalid character in TOKEN")
-// 		}
-// 	}
-
-// 	return nil
-// }
+// ResponseLogData represents the structure of data to be saved
+type ResponseLogData struct {
+	Timestamp      string              `json:"timestamp"`
+	APIUrl         string              `json:"api_url"`
+	Method         string              `json:"method"`
+	ClientIP       string              `json:"client_ip"`
+	Headers        map[string][]string `json:"headers"`
+	QueryParams    map[string][]string `json:"query_params"`
+	RequestBody    interface{}         `json:"request_body"`
+	ResponseBody   interface{}         `json:"response_body"`
+	StatusCode     int                 `json:"status_code"`
+	ContentType    string              `json:"content_type"`
+	ResponseSize   int                 `json:"response_size_bytes"`
+	ProcessingTime string              `json:"processing_time"`
+}
 
 func IsValidIDFromRequest(r *http.Request) error {
 	var token string
@@ -121,55 +118,51 @@ func LogRequestInfo(handler http.HandlerFunc) http.HandlerFunc {
 //   - An error if something goes wrong during validation or logging.
 func ValidateAPI(APIName, clientIPAddress, IDKey, requestURL string) (bool, string, error) {
 
-	// Step 6: Database connection and operation
-	// Connection string for SQL Server
-	connectionString := credentials.GetMySQLDatabase17()
+	// Get PostgreSQL connection string
+	connectionString := credentials.Getdatabasemeivan()
 
-	db, err := sql.Open("mysql", connectionString)
+	db, err := sql.Open("postgres", connectionString)
 	if err != nil {
-		return false, "", fmt.Errorf("DB connection error: %v", err)
+		return false, "", fmt.Errorf("DB open error: %v", err)
 	}
 	defer db.Close()
 
-	stmt, err := db.Prepare("CALL API_Validation_New(?, ?, ?, @statusMessage)")
-	if err != nil {
-		return false, "", err
-	}
-	defer stmt.Close()
-
-	_, err = stmt.Exec(APIName, clientIPAddress, IDKey)
-	if err != nil {
-		return false, "", err
-	}
-
+	// Call stored function: api_validation_new
 	var statusMessage string
-	err = db.QueryRow("SELECT @StatusMessage").Scan(&statusMessage)
+	err = db.QueryRow(
+		`SELECT api_hr.api_validation_new($1, $2, $3);`,
+		APIName, clientIPAddress, IDKey,
+	).Scan(&statusMessage)
+
 	if err != nil {
-		return false, "", err
+		return false, "", fmt.Errorf("DB call failed: %v", err)
 	}
 
+	// Prepare status and error message
 	status := ""
 	errorMessage := ""
+
 	if statusMessage == "Success" {
-		status = statusMessage
+		status = "Success"
 	} else {
 		errorMessage = statusMessage
 	}
 
-	// Log the request and insert into Client_Request table
+	// Insert request log into client_request table
 	_, err = db.Exec(`
-        INSERT INTO Client_Request (
-            Ip_Address, Request_Data, Response_Data,
-            Status, Error, Request_On, Response_On, Updated_On
-        )
-        VALUES (?, ?, '', ?, ?, NOW(), NOW(), NOW())`,
+		INSERT INTO api_hr.client_request 
+			(ip_address, request_data, response_data, status, error, request_on, response_on, updated_on)
+		VALUES 
+			($1, $2, '', $3, $4, NOW(), NOW(), NOW())
+	`,
 		clientIPAddress, requestURL, status, errorMessage,
 	)
 
 	if err != nil {
-		return false, "", err
+		return false, "", fmt.Errorf("Insert log failed: %v", err)
 	}
 
+	// Return whether request is valid
 	return statusMessage == "Success", statusMessage, nil
 }
 
@@ -196,60 +189,6 @@ type Responseset struct {
 // 		http.Error(w, err.Error(), http.StatusBadRequest)
 // 		return false
 // 	}
-
-// 	// Extract API name from URL path (e.g., /Facultydetails -> "Facultydetails")
-// 	pathParts := strings.Split(u.Path, "/")
-// 	var APIName string
-// 	if len(pathParts) > 1 {
-// 		APIName = pathParts[1]
-// 	}
-
-// 	clientIPAddress := strings.Split(r.RemoteAddr, ":")[0]
-
-// 	// Extract token (IDKey) from query
-// 	var IDKey string
-// 	queryValues, err := url.ParseQuery(u.RawQuery)
-// 	if err != nil {
-// 		http.Error(w, err.Error(), http.StatusBadRequest)
-// 		return false
-// 	}
-// 	if idValues, ok := queryValues["token"]; ok && len(idValues) > 0 {
-// 		IDKey = idValues[0]
-// 	}
-
-// 	requestURL := r.URL.String()
-
-// 	isValid, statusMessage, err := ValidateAPI(APIName, clientIPAddress, IDKey, requestURL)
-// 	if err != nil {
-// 		http.Error(w, err.Error(), http.StatusForbidden)
-// 		return false
-// 	}
-
-// 	switch statusMessage {
-// 	case "Invalid_Key":
-// 		return respondWithError(w, 400, "Invalid_Key")
-// 	case "Invalid_APIName":
-// 		return respondWithError(w, 401, "Invalid_APIName")
-// 	case "Invalid_IPAddress":
-// 		return respondWithError(w, 402, "Invalid_IPAddress")
-// 	case "Inactive_APIName":
-// 		return respondWithError(w, 403, "Inactive_APIName")
-// 	case "Inactive_Vendor":
-// 		return respondWithError(w, 404, "Inactive_Vendor")
-// 	case "Inactive_Ip_Address":
-// 		return respondWithError(w, 405, "Inactive_Ip_Address")
-// 	case "UnauthorizedUser":
-// 		return respondWithError(w, 406, "UnauthorizedUser")
-// 	case "Invalid_RollNo":
-// 		return respondWithError(w, 407, "UnauthorizedUser")
-// 	}
-
-// 	if !isValid {
-// 		return respondWithError(w, http.StatusForbidden, statusMessage)
-// 	}
-
-// 	return true
-// }
 
 func HandleRequestfor_apiname_ipaddress_token(w http.ResponseWriter, r *http.Request) bool {
 	// Extract the values from the request
@@ -330,6 +269,7 @@ func HandleRequestfor_apiname_ipaddress_token(w http.ResponseWriter, r *http.Req
 
 	return true
 }
+
 // respondWithError writes an encrypted JSON error response to the client.
 //
 // It builds a structured error object (`Responseset`), marshals it to JSON,
@@ -369,4 +309,129 @@ func respondWithError(w http.ResponseWriter, statusCode int, message string) boo
 	})
 
 	return false
+}
+
+// ensureOriginHeader checks and adds "Origin" header if missing due to casing issues
+func ensureOriginHeader(r *http.Request) map[string][]string {
+	headers := make(map[string][]string)
+	for k, v := range r.Header {
+		headers[k] = v
+	}
+
+	// Ensure "Origin" is preserved if provided in lowercase (some clients do this)
+	if _, ok := headers["Origin"]; !ok {
+		if v := r.Header.Get("origin"); v != "" {
+			headers["Origin"] = []string{v}
+		}
+	}
+
+	return headers
+}
+
+// Save the respone log of user activity
+func SaveResponseLog(
+	r *http.Request,
+	responseBody interface{},
+	statusCode int,
+	contentType string,
+	responseSize int,
+	requestBodyRaw string,
+) {
+	startTime := time.Now() // start timer
+
+	var parsedRequestBody map[string]interface{}
+	var pid string
+
+	// Extract P_id from request body
+	if requestBodyRaw != "" {
+
+		// Try normal JSON parsing first
+		if err := json.Unmarshal([]byte(requestBodyRaw), &parsedRequestBody); err == nil {
+
+			// CASE 1: Direct JSON { "P_id": "xxxx" }
+			if id, ok := parsedRequestBody["P_id"].(string); ok {
+				pid = id
+			}
+
+			// CASE 2: Encrypted format: { "Data": "P_id||EncryptedString" }
+			if pid == "" {
+				if data, ok := parsedRequestBody["Data"].(string); ok {
+					parts := strings.Split(data, "||")
+					if len(parts) > 0 && parts[0] != "" {
+						pid = parts[0] // first part is P_id
+					}
+				}
+			}
+		}
+	}
+
+	// If P_id missing → use default
+	if pid == "" {
+		pid = "unknown_pid"
+	}
+
+	// Timestamp format for folder + filename
+	now := time.Now()
+	dateFolder := now.Format("02_01_2006") // e.g. 29_11_2025
+	timeStamp := now.Format("15_04_05")
+
+	apiName := strings.TrimPrefix(r.URL.Path, "/")
+
+	// Build directory: /var/log/Hrmodule/DATE/PID/
+	baseDir := "/var/log/Hrmodule"
+
+	// ✔ Ensure Hrmodule folder exists
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		fmt.Println("Error creating base Hrmodule directory:", err)
+		return
+	}
+
+	pidFolder := filepath.Join(baseDir, dateFolder, pid)
+
+	// ✔ Create date + PID folder
+	if err := os.MkdirAll(pidFolder, 0755); err != nil {
+		fmt.Println("Error creating log directory:", err)
+		return
+	}
+
+	// File: APIName__Time.json
+	fileName := fmt.Sprintf("%s__%s.json", apiName, timeStamp)
+	fullFilePath := filepath.Join(pidFolder, fileName)
+
+	headers := ensureOriginHeader(r)
+
+	var finalRequestBody interface{}
+	if parsedRequestBody != nil {
+		finalRequestBody = parsedRequestBody
+	} else {
+		finalRequestBody = requestBodyRaw
+	}
+
+	logData := ResponseLogData{
+		Timestamp:      now.Format("2006-01-02 15:04:05.000"),
+		APIUrl:         r.URL.Path,
+		Method:         r.Method,
+		ClientIP:       r.RemoteAddr,
+		Headers:        headers,
+		QueryParams:    r.URL.Query(),
+		RequestBody:    finalRequestBody,
+		ResponseBody:   responseBody,
+		StatusCode:     statusCode,
+		ContentType:    contentType,
+		ResponseSize:   responseSize,
+		ProcessingTime: time.Since(startTime).String(),
+	}
+
+	logJSON, err := json.MarshalIndent(logData, "", "    ")
+	if err != nil {
+		fmt.Println("Error marshaling log data:", err)
+		return
+	}
+
+	if err := os.WriteFile(fullFilePath, logJSON, 0644); err != nil {
+		fmt.Println("Error writing log file:", err)
+		return
+	}
+
+	fmt.Println("Response log saved to", fullFilePath)
 }

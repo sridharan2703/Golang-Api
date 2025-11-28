@@ -18,11 +18,11 @@ import (
 	_ "github.com/lib/pq"
 )
 
-const MyQuerySessionData = `
+var MyQuerySessionData = (`
 SELECT id, session_id, department, username, user_id, employee_id, is_active, idletimeout, login_date, logout_date
-FROM session_data
+FROM meivan.session_data
 WHERE session_id = $1
-`
+`)
 
 // SessionDataStructure defines the structure of session_data
 type SessionDataStructure struct {

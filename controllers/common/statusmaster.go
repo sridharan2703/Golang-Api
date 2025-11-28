@@ -17,8 +17,11 @@ import (
 	"Hrmodule/utils"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
+	"strings"
 )
 
 // APIResponseforStatusMaster standard response
@@ -30,7 +33,7 @@ type APIResponseforStatusMaster struct {
 
 // Token wrapper
 type StatusMasterTokenRequest struct {
-	Token string `json:"token"`
+	Data string `json:"Data"`
 }
 
 // StatusMaster API handler
@@ -50,31 +53,78 @@ func StatusMaster(w http.ResponseWriter, r *http.Request) {
 
 	// Extract token
 	var req StatusMasterTokenRequest
-	if err := json.Unmarshal(body, &req); err == nil && req.Token != "" {
-		r.Header.Set("token", req.Token)
+
+	if err := json.Unmarshal(body, &req); err != nil {
+		log.Printf("Error unmarshalling JSON: %v", err)
+		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
+		return
 	}
 
+	// 3. Decrypt Data and Extract Token
+	parts := strings.Split(req.Data, "||")
+	if len(parts) != 2 {
+		log.Printf("Invalid data format")
+		http.Error(w, "Invalid Data format", http.StatusBadRequest)
+		return
+	}
+
+	pid := parts[0]
+	encryptedPart := parts[1]
+
+	// Get decryption key from database
+	key, err := utils.GetDecryptKey(pid)
+	if err != nil {
+		log.Printf("Key fetch failed: %v", err)
+		http.Error(w, "Decryption failed", http.StatusUnauthorized)
+		return
+	}
+
+	// Decrypt the payload
+	decryptedJSON, err := utils.DecryptAES(encryptedPart, key)
+	if err != nil {
+		log.Printf("Decryption error: %v", err)
+		http.Error(w, "Decryption failed", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse decrypted JSON to get token
+	var decryptedData map[string]interface{}
+	if err := json.Unmarshal([]byte(decryptedJSON), &decryptedData); err != nil {
+		log.Printf("Invalid decrypted JSON: %v", err)
+		http.Error(w, "Invalid decrypted data", http.StatusBadRequest)
+		return
+	}
+
+	token, ok := decryptedData["token"].(string)
+	if !ok || token == "" {
+		log.Printf("Token not found in decrypted data")
+		http.Error(w, "Token not found", http.StatusBadRequest)
+		return
+	}
+
+	// 4. Set Token Header for Authentication
+	r.Header.Set("token", token)
 	// Authenticate
 	if !auth.HandleRequestfor_apiname_ipaddress_token(w, r) {
 		return
 	}
 
 	// Log + process
-	loggedHandler := auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := auth.IsValidIDFromRequest(r); err != nil {
 			http.Error(w, "Invalid TOKEN provided", http.StatusBadRequest)
 			return
 		}
 
 		// DB query
-		data, total, err := database.StatusMasterDatabase(w, r)
+		data, total, err := database.StatusMasterDatabase(decryptedData)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 
 		// Build response
-		resp := APIResponseforStatusMaster{
+		response := APIResponseforStatusMaster{
 			Status:  200,
 			Message: "Success",
 			Data: map[string]interface{}{
@@ -83,25 +133,35 @@ func StatusMaster(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		// Marshal
-		jsonResp, err := json.MarshalIndent(resp, "", "    ")
+		responseJSON, err := json.MarshalIndent(response, "", "    ")
 		if err != nil {
-			http.Error(w, "Failed to marshal response", http.StatusInternalServerError)
+			http.Error(w, "Response marshal failed", http.StatusInternalServerError)
 			return
 		}
 
-		// Encrypt
-		enc, err := utils.Encrypt(jsonResp)
+		encryptedResponse, err := utils.EncryptAES(string(responseJSON), key)
 		if err != nil {
-			http.Error(w, "Encryption failed", http.StatusInternalServerError)
+			http.Error(w, "Response encryption failed", http.StatusInternalServerError)
 			return
 		}
 
-		// Send
+		finalResp := map[string]string{
+			"Data": fmt.Sprintf("%s||%s", pid, encryptedResponse),
+		}
+
+		// ✅ Save exactly what is sent to client
+		auth.SaveResponseLog(
+			r,
+			finalResp,          // only final response
+			http.StatusOK,      // status code
+			"application/json", // content type
+			len(responseJSON),  // size
+			string(body),       // original request
+		)
+
+		// ✅ Send to client
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"Data": enc,
-		})
-	}))
-	loggedHandler.ServeHTTP(w, r)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(finalResp)
+	})).ServeHTTP(w, r)
 }

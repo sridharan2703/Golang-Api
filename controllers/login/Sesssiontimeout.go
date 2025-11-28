@@ -24,35 +24,32 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	_ "github.com/lib/pq"
 )
 
-// SessionRequest represents the expected JSON structure for a session timeout request.
-type SessionRequest struct {
-	SessionID   string `json:"session_id"`  // SessionID is the identifier of the session to be updated.
-	Token       string `json:"token"`       // Token can also come from request body
-	IdleTimeout int    `json:"idletimeout"` // IdleTimeout value to be set (0 or 1)
+// Incoming encrypted request
+type SessionTimeoutEncryptedRequest struct {
+	Data string `json:"Data"` // pid||encryptedPayload
 }
 
-// APIResponse defines the JSON response structure used by API endpoints.
+// API response
 type APIResponse struct {
-	Status  int    `json:"status"`  // HTTP-like status code
-	Message string `json:"message"` // Human-readable message
+	Status  int    `json:"status"`
+	Message string `json:"message"`
 }
 
-// UpdateSessionLogout updates the Is_Active flag to 0, sets idletimeout, and sets the Logout_Date to NOW()
+// Update session logout in DB
 func UpdateSessionLogout(sessionId string, idleTimeout int) error {
-	// Connection string for Postgres
-	connectionString := credentials.Getdatabasemeivan()
 
-	db, err := sql.Open("postgres", connectionString)
+	db, err := sql.Open("postgres", credentials.Getdatabasemeivan())
 	if err != nil {
 		return fmt.Errorf("DB open error: %v", err)
 	}
 	defer db.Close()
 
-	// ✅ Fixed Postgres syntax: proper placeholders and comma placement
+	// Correct query
 	query := `
 		UPDATE session_data 
 		SET Is_Active = 0, idletimeout = $2, Logout_Date = NOW() 
@@ -66,92 +63,121 @@ func UpdateSessionLogout(sessionId string, idleTimeout int) error {
 	return nil
 }
 
-// SessionTimeoutHandler handles POST requests to the /SessionTimeout endpoint.
 func SessionTimeoutHandler(w http.ResponseWriter, r *http.Request) {
-	// Step 0: Read and parse body (so we can inject token if provided in JSON)
-	body, err := io.ReadAll(r.Body)
+
+	// Only POST allowed
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Read full body
+	rawBody, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, "Unable to read request body", http.StatusBadRequest)
 		return
 	}
-	r.Body = io.NopCloser(bytes.NewBuffer(body)) // restore for downstream
+	r.Body = io.NopCloser(bytes.NewBuffer(rawBody))
 
-	var req SessionRequest
-	_ = json.Unmarshal(body, &req)
-
-	// If token provided in body, inject into header
-	if req.Token != "" {
-		r.Header.Set("token", req.Token)
+	// Parse JSON for Data
+	var encReq SessionTimeoutEncryptedRequest
+	if err := json.Unmarshal(rawBody, &encReq); err != nil {
+		http.Error(w, "Invalid JSON", http.StatusBadRequest)
+		return
 	}
 
-	// Step 1: Authenticate (token/IP validation)
+	// Split: pid || encryptedPayload
+	parts := strings.Split(encReq.Data, "||")
+	if len(parts) != 2 {
+		http.Error(w, "Invalid Data format", http.StatusBadRequest)
+		return
+	}
+
+	pid := parts[0]
+	encryptedInput := parts[1]
+
+	// Fetch AES Key from DB using P_ID
+	key, err := utils.GetDecryptKey(pid)
+	if err != nil {
+		http.Error(w, "Failed to fetch decryption key", http.StatusUnauthorized)
+		return
+	}
+
+	// Decrypt AES → JSON
+	decryptedJSON, err := utils.DecryptAES(encryptedInput, key)
+	if err != nil {
+		http.Error(w, "Decryption failed", http.StatusUnauthorized)
+		return
+	}
+
+	// Parse decrypted JSON
+	var decryptedData map[string]interface{}
+	if err := json.Unmarshal([]byte(decryptedJSON), &decryptedData); err != nil {
+		http.Error(w, "Invalid decrypted JSON", http.StatusBadRequest)
+		return
+	}
+
+	// Extract token & session_id
+	token, _ := decryptedData["token"].(string)
+	//sessionID, _ := decryptedData["session_id"].(string)
+
+	// Extract idletimeout (float64 → int)
+	idletimeout := 0
+	if v, ok := decryptedData["idletimeout"].(float64); ok {
+		idletimeout = int(v)
+	}
+
+	// Validate required fields
+	if token == "" {
+		http.Error(w, "Missing required fields in decrypted payload", http.StatusBadRequest)
+		return
+	}
+
+	// Inject token into header
+	r.Header.Set("token", token)
+
+	// Step: validate token + IP
 	if !auth.HandleRequestfor_apiname_ipaddress_token(w, r) {
 		return
 	}
 
-	// Wrap logic with logging
-	loggedHandler := auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Step 2: Validate common token
+	// Wrap next stage
+	auth.LogRequestInfo(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+
+		// Validate token
 		if err := auth.IsValidIDFromRequest(r); err != nil {
 			http.Error(w, "Invalid TOKEN provided", http.StatusBadRequest)
 			return
 		}
 
-		// Step 3: Allow only POST
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
-			return
-		}
+		// Update the session
+		err := UpdateSessionLogout(pid, idletimeout)
 
-		// Step 4: Parse JSON body again and validate required fields
-		if err := json.Unmarshal(body, &req); err != nil {
-			http.Error(w, "Invalid JSON format", http.StatusBadRequest)
-			return
-		}
-
-		// Validate required session_id
-		if req.SessionID == "" {
-			http.Error(w, "Missing required field: session_id", http.StatusBadRequest)
-			return
-		}
-
-		// Validate idletimeout value (should be 0 or 1, default to 0 if not provided)
-		if req.IdleTimeout != 0 && req.IdleTimeout != 1 {
-			req.IdleTimeout = 0 // Default to 0 if invalid value provided
-		}
-
-		// Step 5: Update session logout with idletimeout parameter
-		err := UpdateSessionLogout(req.SessionID, req.IdleTimeout)
-
-		// Step 6: Build API response
-		var response APIResponse
+		var apiResp APIResponse
 		if err != nil {
-			response = APIResponse{Status: 500, Message: "Failed to update session: " + err.Error()}
+			apiResp = APIResponse{
+				Status:  500,
+				Message: "Failed to update session: " + err.Error(),
+			}
 		} else {
-			response = APIResponse{Status: 200, Message: fmt.Sprintf("Session updated successfully with idletimeout=%d", req.IdleTimeout)}
+			apiResp = APIResponse{
+				Status:  200,
+				Message: fmt.Sprintf("Session updated successfully (idletimeout=%d)", idletimeout),
+			}
 		}
 
-		// Step 7: Marshal response
-		responseBytes, err := json.Marshal(response)
-		if err != nil {
-			http.Error(w, "Failed to serialize JSON", http.StatusInternalServerError)
-			return
+		// Encrypt response JSON
+		jsonResp, _ := json.Marshal(apiResp)
+		encryptedResp, _ := utils.EncryptAES(string(jsonResp), key)
+
+		// Final output: pid||encryptedResponse
+		finalResponse := map[string]string{
+			"Data": fmt.Sprintf("%s||%s", pid, encryptedResp),
 		}
 
-		// Step 8: Encrypt response
-		encrypted, err := utils.Encrypt(responseBytes)
-		if err != nil {
-			http.Error(w, "Encryption failed", http.StatusInternalServerError)
-			return
-		}
-
-		// Step 9: Send encrypted response
+		// Write JSON output
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"Data": encrypted,
-		})
-	}))
+		json.NewEncoder(w).Encode(finalResponse)
 
-	// Step 10: Execute logged handler
-	loggedHandler.ServeHTTP(w, r)
+	})).ServeHTTP(w, r)
 }

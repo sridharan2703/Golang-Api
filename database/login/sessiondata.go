@@ -15,44 +15,29 @@ import (
 	credentials "Hrmodule/dbconfig"
 	modelslogin "Hrmodule/models/login"
 	"database/sql"
-	"encoding/json"
 	"fmt"
-	"net/http"
 
 	_ "github.com/lib/pq"
 )
 
-// Request struct for SessionData
-type SessionDataRequest struct {
-	SessionID *string `json:"Session_id"`
-}
-
 // SessionDatadatabase executes query and returns SessionData list
-func SessionDatadatabase(w http.ResponseWriter, r *http.Request) ([]modelslogin.SessionDataStructure, int, error) {
+func SessionDatadatabase(decryptedData map[string]interface{}) ([]modelslogin.SessionDataStructure, int, error) {
 	// Connection string
 	connectionString := credentials.Getdatabasemeivan()
 
 	db, err := sql.Open("postgres", connectionString)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("DB open error: %v", err), http.StatusInternalServerError)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("DB open error: %v", err)
 	}
 	defer db.Close()
 
-	// Decode POST body
-	var req SessionDataRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return nil, 0, fmt.Errorf("invalid request body: %v", err)
-	}
-	defer r.Body.Close()
-
-	// Fixed: Check for nil pointer and empty string
-	if req.SessionID == nil || *req.SessionID == "" {
-		return nil, 0, fmt.Errorf("missing or empty 'Session_id' in request body")
+	SessionID, ok := decryptedData["Session_id"].(string)
+	if !ok || SessionID == "" {
+		return nil, 0, fmt.Errorf("missing 'Session_id' in request data")
 	}
 
 	// Execute query
-	rows, err := db.Query(modelslogin.MyQuerySessionData, req.SessionID)
+	rows, err := db.Query(modelslogin.MyQuerySessionData, SessionID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("error querying database: %v", err)
 	}

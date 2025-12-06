@@ -10,7 +10,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: self-hosted   # ✅ RUNS ON YOUR SERVER (10.24.5.66)
+    runs-on: self-hosted   # ✅ Runs on your internal server
 
     steps:
       - name: Checkout Code
@@ -34,6 +34,7 @@ jobs:
 
           echo "🚀 New version: $NEW_TAG"
           echo "new_version=$NEW_TAG" >> $GITHUB_OUTPUT
+          echo "old_version=$LAST_TAG" >> $GITHUB_OUTPUT
 
       # ✅ SAFE TAG PUSH
       - name: Create & Push Git Tag (Safe)
@@ -48,6 +49,22 @@ jobs:
             git push origin "$NEW_VERSION"
             echo "✅ Tag pushed successfully."
           fi
+
+      # ✅ ✅ ✅ BACKUP OLD VERSION ✅ ✅ ✅
+      - name: Backup Current Version
+        run: |
+          OLD_VERSION="${{ steps.version.outputs.old_version }}"
+          echo "📦 Backing up old version: $OLD_VERSION"
+
+          BACKUP_DIR="/home/user/hr_backup/$OLD_VERSION"
+          PROJECT_DIR="/home/user/hr_github"
+
+          mkdir -p "$BACKUP_DIR"
+
+          echo "📂 Copying files to backup..."
+          rsync -av --exclude '.git' "$PROJECT_DIR/" "$BACKUP_DIR/"
+
+          echo "✅ Backup completed at $BACKUP_DIR"
 
       # ✅ ✅ ✅ MAIN DEPLOYMENT STEP (SELF-HOSTED) ✅ ✅ ✅
       - name: Deploy on Production (Self-Hosted)

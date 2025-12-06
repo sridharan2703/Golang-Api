@@ -1,6 +1,5 @@
 name: Deploy Development to Production
 
-# REQUIRED for pushing git tags
 permissions:
   contents: write
 
@@ -13,13 +12,13 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
 
-
     steps:
       - name: Checkout Code
         uses: actions/checkout@v3
         with:
-          fetch-depth: 0  # required for tags
+          fetch-depth: 0
 
+      # ✅ Auto Increment Version
       - name: Auto Increment Version
         id: version
         run: |
@@ -36,116 +35,62 @@ jobs:
           echo "🚀 New version: $NEW_TAG"
           echo "new_version=$NEW_TAG" >> $GITHUB_OUTPUT
 
-      - name: Create & Push Lightweight Git Tag
+      # ✅ Safe Tag Push (No Duplicate Failure)
+      - name: Create & Push Git Tag (Safe)
         run: |
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
-          echo "🏷 Creating lightweight tag: $NEW_VERSION"
+          echo "🏷 Creating tag: $NEW_VERSION"
 
           if git rev-parse "$NEW_VERSION" >/dev/null 2>&1; then
-            echo "⚠️ Tag $NEW_VERSION already exists. Skipping tag creation."
+            echo "⚠️ Tag already exists. Skipping."
           else
             git tag "$NEW_VERSION"
             git push origin "$NEW_VERSION"
-            echo "✅ Tag $NEW_VERSION pushed successfully."
+            echo "✅ Tag pushed successfully."
           fi
 
-      - name: Deploy on Production
-        run: |
-          NEW_VERSION="${{ steps.version.outputs.new_version }}"
-          echo "🌀 Deploying version $NEW_VERSION ..."
+      # ✅ ✅ ✅ REAL DEPLOYMENT VIA SSH ✅ ✅ ✅
+      - name: Deploy on Server via SSH
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            echo "🌀 Deploying version ${{ steps.version.outputs.new_version }} ..."
 
-          cd /home/user/hr_github
-          git fetch --all
-          git reset --hard origin/development
-          git pull origin development
+            cd /home/user/hr_github || exit 1
 
-          echo "📦 Cleaning dependencies..."
-          /usr/local/go/bin/go mod tidy
-          /usr/local/go/bin/go mod download
+            echo "📥 Pulling latest code..."
+            git fetch --all
+            git reset --hard origin/development
+            git pull origin development
 
-          echo "📦 Building Go project ($NEW_VERSION)..."
-          /usr/local/go/bin/go build -o hrserver main.go
+            echo "📦 Cleaning dependencies..."
+            /usr/local/go/bin/go mod tidy
+            /usr/local/go/bin/go mod download
 
-          echo "🔍 Checking running server on port 2703..."
-          PID=$(lsof -t -i:2703 || echo "")
+            echo "📦 Building Go project..."
+            /usr/local/go/bin/go build -o hrserver main.go
 
-          if [ ! -z "$PID" ]; then
-            echo "🔪 Killing process $PID ..."
-            kill -9 $PID || true
-            sleep 3  # Wait for port to be fully released
-          else
-            echo "⚠ No process running on port 2703"
-          fi
+            echo "🔍 Stopping old server on port 2703..."
+            PID=$(lsof -t -i:2703 || echo "")
+            if [ ! -z "$PID" ]; then
+              kill -9 $PID || true
+              sleep 2
+            fi
 
-          # Verify port is completely free
-          REMAINING_PID=$(lsof -t -i:2703 || echo "")
-          if [ ! -z "$REMAINING_PID" ]; then
-            echo "⚠️ Port still occupied by PID: $REMAINING_PID, force killing..."
-            kill -9 $REMAINING_PID || true
-            sleep 2
-          fi
+            echo "🚀 Starting new server..."
+            nohup ./hrserver > hr.log 2>&1 &
 
-          echo "🚀 Starting new server in background using setsid..."
-          # Use setsid for complete process detachment
-          setsid ./hrserver > hr.log 2>&1 < /dev/null &
-          
-          sleep 5  # Give server more time to start
-          
-          # Verify the server started successfully
-          NEW_PID=$(lsof -t -i:2703 || echo "")
-          if [ ! -z "$NEW_PID" ]; then
-            echo "✅ Server started successfully with PID: $NEW_PID"
-          else
-            echo "❌ Warning: Server not detected on port 2703"
-            echo "📋 Checking for any hrserver processes..."
-            ps aux | grep hrserver | grep -v grep || echo "No hrserver process found"
-            echo "📄 Last 20 lines of log:"
-            tail -20 hr.log 2>/dev/null || echo "No log file yet"
-          fi
+            sleep 3
+            NEW_PID=$(lsof -t -i:2703 || echo "")
+            if [ ! -z "$NEW_PID" ]; then
+              echo "✅ Server started successfully with PID: $NEW_PID"
+            else
+              echo "❌ Server failed to start"
+              tail -20 hr.log || true
+              exit 1
+            fi
 
-          echo "🎉 Deployment complete! Version: $NEW_VERSION"
-
-      - name: Verify Server Status
-        run: |
-          cd /home/user/hr_github
-          
-          echo "🔍 Final verification - checking server status..."
-          sleep 3
-          
-          # Check if server is running on port
-          SERVER_PID=$(lsof -t -i:2703 || echo "")
-          
-          if [ ! -z "$SERVER_PID" ]; then
-            echo "✅ Server is RUNNING"
-            echo "   PID: $SERVER_PID"
-            echo "   Port: 2703"
-            
-            # Show process details
-            echo ""
-            echo "📊 Process details:"
-            ps -p $SERVER_PID -o pid,ppid,cmd,etime,user || true
-            
-            # Show recent logs
-            echo ""
-            echo "📄 Recent logs (last 10 lines):"
-            tail -10 hr.log 2>/dev/null || echo "No logs available"
-            
-            exit 0
-          else
-            echo "❌ Server is NOT RUNNING on port 2703"
-            echo ""
-            echo "🔍 Checking all hrserver processes:"
-            ps aux | grep "[h]rserver" || echo "No hrserver process found"
-            
-            echo ""
-            echo "📄 Full log output:"
-            cat hr.log 2>/dev/null || echo "No log file found"
-            
-            echo ""
-            echo "💡 Troubleshooting tips:"
-            echo "   1. Check if the binary has execute permissions"
-            echo "   2. Check for any application errors in the log"
-            echo "   3. Verify port 2703 is not blocked by firewall"
-            
-            exit 1
-          fi
+            echo "🎉 Deployment completed successfully!"

@@ -1,4 +1,4 @@
-name: Deploy Development to Production
+name: Deploy Development to Production with GitHub Datewise Backup
 
 permissions:
   contents: write
@@ -10,7 +10,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: self-hosted   # ✅ Runs on your internal server
+    runs-on: self-hosted
 
     steps:
       - name: Checkout Code
@@ -22,138 +22,89 @@ jobs:
       - name: Auto Increment Version
         id: version
         run: |
-          echo "🔍 Fetching existing tags..."
           git fetch --tags
 
           LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
-          echo "🕒 Last version: $LAST_TAG"
+          echo "Last version: $LAST_TAG"
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "${LAST_TAG#v}"
           PATCH=$((PATCH + 1))
           NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
-          echo "🚀 New version: $NEW_TAG"
+          DATE_TIME=$(date +"%Y-%m-%d_%H-%M-%S")
+
           echo "new_version=$NEW_TAG" >> $GITHUB_OUTPUT
           echo "old_version=$LAST_TAG" >> $GITHUB_OUTPUT
+          echo "backup_datetime=$DATE_TIME" >> $GITHUB_OUTPUT
 
-      # ✅ SAFE TAG PUSH
-      - name: Create & Push Git Tag (Safe)
+      # ✅ SAFE NEW VERSION TAG
+      - name: Create & Push New Version Tag
         run: |
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
-          echo "🏷 Creating tag: $NEW_VERSION"
 
           if git rev-parse "$NEW_VERSION" >/dev/null 2>&1; then
-            echo "⚠️ Tag already exists. Skipping."
+            echo "Tag exists. Skipping."
           else
             git tag "$NEW_VERSION"
             git push origin "$NEW_VERSION"
-            echo "✅ Tag pushed successfully."
           fi
 
-      # ✅ ✅ ✅ BACKUP OLD VERSION ✅ ✅ ✅
-      - name: Backup Current Version
+      # ✅ ✅ ✅ CREATE DATEWISE ZIP BACKUP ✅ ✅ ✅
+      - name: Create ZIP Backup (Version + Datewise)
         run: |
           OLD_VERSION="${{ steps.version.outputs.old_version }}"
-          echo "📦 Backing up old version: $OLD_VERSION"
+          BACKUP_TIME="${{ steps.version.outputs.backup_datetime }}"
 
-          BACKUP_DIR="/home/user/hr_backup/$OLD_VERSION"
-          PROJECT_DIR="/home/user/hr_github"
+          BACKUP_DIR="backup/$OLD_VERSION/$BACKUP_TIME"
+          ZIP_PATH="$BACKUP_DIR/source.zip"
 
           mkdir -p "$BACKUP_DIR"
 
-          echo "📂 Copying files to backup..."
-          rsync -av --exclude '.git' "$PROJECT_DIR/" "$BACKUP_DIR/" || echo "⚠️ rsync warning (code 24) ignored - backup still valid"
+          echo "📦 Creating ZIP backup at: $ZIP_PATH"
 
-          echo "✅ Backup completed at $BACKUP_DIR"
+          zip -r "$ZIP_PATH" ./ -x ".git/*"
 
+          echo "ZIP_PATH=$ZIP_PATH" >> $GITHUB_ENV
 
-      # ✅ ✅ ✅ MAIN DEPLOYMENT STEP (SELF-HOSTED) ✅ ✅ ✅
+      # ✅ ✅ ✅ UPLOAD ZIP TO GITHUB RELEASE ✅ ✅ ✅
+      - name: Upload Backup ZIP to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.old_version }}
+          name: Backup ${{ steps.version.outputs.old_version }}
+          files: ${{ env.ZIP_PATH }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ✅ ✅ ✅ DEPLOY ON SERVER (SELF-HOSTED) ✅ ✅ ✅
       - name: Deploy on Production (Self-Hosted)
         run: |
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
-          echo "🌀 Deploying version $NEW_VERSION ..."
+          echo "Deploying version $NEW_VERSION ..."
 
           cd /home/user/hr_github || exit 1
 
-          echo "📥 Pulling latest code..."
           git fetch --all
           git reset --hard origin/development
           git pull origin development
 
-          echo "📦 Cleaning dependencies..."
           /usr/local/go/bin/go mod tidy
           /usr/local/go/bin/go mod download
-
-          echo "📦 Building Go project..."
           /usr/local/go/bin/go build -o hrserver main.go
 
-          echo "🔍 Stopping old server on port 2703..."
           PID=$(lsof -t -i:2703 || echo "")
-
           if [ ! -z "$PID" ]; then
-            echo "🔪 Killing process $PID ..."
             kill -9 $PID || true
             sleep 3
-          else
-            echo "⚠ No process running on port 2703"
           fi
 
-          REMAINING_PID=$(lsof -t -i:2703 || echo "")
-          if [ ! -z "$REMAINING_PID" ]; then
-            echo "⚠️ Port still occupied by PID: $REMAINING_PID, force killing..."
-            kill -9 $REMAINING_PID || true
-            sleep 2
-          fi
-
-          echo "🚀 Starting new server..."
           setsid ./hrserver > hr.log 2>&1 < /dev/null &
 
           sleep 5
           NEW_PID=$(lsof -t -i:2703 || echo "")
-          if [ ! -z "$NEW_PID" ]; then
-            echo "✅ Server started successfully with PID: $NEW_PID"
-          else
-            echo "❌ Server not detected on port 2703"
-            echo "📋 Checking for any hrserver processes..."
-            ps aux | grep hrserver | grep -v grep || echo "No hrserver process found"
-            echo "📄 Last 20 lines of log:"
-            tail -20 hr.log 2>/dev/null || echo "No log file yet"
+          if [ -z "$NEW_PID" ]; then
+            echo "Server failed to start"
             exit 1
           fi
 
-          echo "🎉 Deployment completed successfully!"
-
-      # ✅ ✅ ✅ FINAL VERIFICATION ✅ ✅ ✅
-      - name: Verify Server Status
-        run: |
-          cd /home/user/hr_github
-
-          echo "🔍 Final verification - checking server status..."
-          sleep 3
-
-          SERVER_PID=$(lsof -t -i:2703 || echo "")
-
-          if [ ! -z "$SERVER_PID" ]; then
-            echo "✅ Server is RUNNING"
-            echo "   PID: $SERVER_PID"
-            echo "   Port: 2703"
-
-            echo ""
-            echo "📊 Process details:"
-            ps -p $SERVER_PID -o pid,ppid,cmd,etime,user || true
-
-            echo ""
-            echo "📄 Recent logs (last 10 lines):"
-            tail -10 hr.log 2>/dev/null || echo "No logs available"
-            exit 0
-          else
-            echo "❌ Server is NOT RUNNING on port 2703"
-            echo ""
-            echo "🔍 Checking all hrserver processes:"
-            ps aux | grep "[h]rserver" || echo "No hrserver process found"
-
-            echo ""
-            echo "📄 Full log output:"
-            cat hr.log 2>/dev/null || echo "No log file found"
-            exit 1
-          fi
+          echo "✅ Deployment successful with version $NEW_VERSION"

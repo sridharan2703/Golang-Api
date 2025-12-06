@@ -1,4 +1,4 @@
-name: Deploy Development to Production with GitHub Datewise TAR Backup
+name: Deploy Development to Production with Per-Version GitHub Backup
 
 permissions:
   contents: write
@@ -34,44 +34,45 @@ jobs:
           DATE_TIME=$(date +"%Y-%m-%d_%H-%M-%S")
 
           echo "new_version=$NEW_TAG" >> $GITHUB_OUTPUT
-          echo "old_version=$LAST_TAG" >> $GITHUB_OUTPUT
           echo "backup_datetime=$DATE_TIME" >> $GITHUB_OUTPUT
 
-      # ✅ SAFE NEW VERSION TAG
+      # ✅ CREATE & PUSH NEW VERSION TAG (EACH VERSION)
       - name: Create & Push New Version Tag
         run: |
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
 
           if git rev-parse "$NEW_VERSION" >/dev/null 2>&1; then
-            echo "Tag exists. Skipping."
+            echo "⚠️ Tag already exists. Skipping."
           else
             git tag "$NEW_VERSION"
             git push origin "$NEW_VERSION"
+            echo "✅ New version tag created: $NEW_VERSION"
           fi
 
-      # ✅ ✅ ✅ CREATE DATEWISE TAR.GZ BACKUP ✅ ✅ ✅
-      - name: Create TAR Backup (Version + Datewise)
+      # ✅ ✅ ✅ CREATE TAR BACKUP FOR *THIS VERSION ONLY* ✅ ✅ ✅
+      - name: Create TAR Backup (Per Version + Datewise)
         run: |
-          OLD_VERSION="${{ steps.version.outputs.old_version }}"
+          VERSION="${{ steps.version.outputs.new_version }}"
           BACKUP_TIME="${{ steps.version.outputs.backup_datetime }}"
 
-          BACKUP_DIR="backup/$OLD_VERSION/$BACKUP_TIME"
+          BACKUP_DIR="backup/$VERSION/$BACKUP_TIME"
           TAR_PATH="$BACKUP_DIR/source.tar.gz"
 
           mkdir -p "$BACKUP_DIR"
 
-          echo "📦 Creating TAR backup at: $TAR_PATH"
+          echo "📦 Creating TAR backup for $VERSION at:"
+          echo "    $TAR_PATH"
 
           tar --exclude='.git' -czf "$TAR_PATH" .
 
           echo "TAR_PATH=$TAR_PATH" >> $GITHUB_ENV
 
-      # ✅ ✅ ✅ UPLOAD TAR TO GITHUB RELEASE ✅ ✅ ✅
-      - name: Upload Backup TAR to GitHub Release
+      # ✅ ✅ ✅ UPLOAD BACKUP TO *THE SAME VERSION RELEASE* ✅ ✅ ✅
+      - name: Upload Backup TAR to GitHub Release (Per Version)
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ steps.version.outputs.old_version }}
-          name: Backup ${{ steps.version.outputs.old_version }}
+          tag_name: ${{ steps.version.outputs.new_version }}
+          name: Backup ${{ steps.version.outputs.new_version }}
           files: ${{ env.TAR_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -80,7 +81,7 @@ jobs:
       - name: Deploy on Production (Self-Hosted)
         run: |
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
-          echo "Deploying version $NEW_VERSION ..."
+          echo "🚀 Deploying version $NEW_VERSION ..."
 
           cd /home/user/hr_github || exit 1
 
@@ -103,7 +104,7 @@ jobs:
           sleep 5
           NEW_PID=$(lsof -t -i:2703 || echo "")
           if [ -z "$NEW_PID" ]; then
-            echo "Server failed to start"
+            echo "❌ Server failed to start"
             exit 1
           fi
 

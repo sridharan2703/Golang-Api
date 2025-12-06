@@ -50,7 +50,7 @@ jobs:
           fi
 
       # ✅ ✅ ✅ CREATE DATEWISE ZIP BACKUP ✅ ✅ ✅
-     - name: Create ZIP Backup (Version + Datewise)
+      - name: Create ZIP Backup (Version + Datewise)
         run: |
           # ✅ Auto-install zip if missing
           if ! command -v zip &> /dev/null; then

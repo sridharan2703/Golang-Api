@@ -1,4 +1,4 @@
-name: Deploy Development to Production with GitHub Datewise Backupnew
+name: Deploy Development to Production with GitHub Datewise TAR Backup
 
 permissions:
   contents: write
@@ -49,37 +49,30 @@ jobs:
             git push origin "$NEW_VERSION"
           fi
 
-      # ✅ ✅ ✅ CREATE DATEWISE ZIP BACKUP ✅ ✅ ✅
-      - name: Create ZIP Backup (Version + Datewise)
+      # ✅ ✅ ✅ CREATE DATEWISE TAR.GZ BACKUP ✅ ✅ ✅
+      - name: Create TAR Backup (Version + Datewise)
         run: |
-          # ✅ Auto-install zip if missing
-          if ! command -v zip &> /dev/null; then
-            echo "Installing zip..."
-            sudo yum install -y zip || sudo apt install -y zip
-          fi
-
           OLD_VERSION="${{ steps.version.outputs.old_version }}"
           BACKUP_TIME="${{ steps.version.outputs.backup_datetime }}"
 
           BACKUP_DIR="backup/$OLD_VERSION/$BACKUP_TIME"
-          ZIP_PATH="$BACKUP_DIR/source.zip"
+          TAR_PATH="$BACKUP_DIR/source.tar.gz"
 
           mkdir -p "$BACKUP_DIR"
 
-          echo "📦 Creating ZIP backup at: $ZIP_PATH"
+          echo "📦 Creating TAR backup at: $TAR_PATH"
 
-          zip -r "$ZIP_PATH" ./ -x ".git/*"
+          tar --exclude='.git' -czf "$TAR_PATH" .
 
-          echo "ZIP_PATH=$ZIP_PATH" >> $GITHUB_ENV
+          echo "TAR_PATH=$TAR_PATH" >> $GITHUB_ENV
 
-
-      # ✅ ✅ ✅ UPLOAD ZIP TO GITHUB RELEASE ✅ ✅ ✅
-      - name: Upload Backup ZIP to GitHub Release
+      # ✅ ✅ ✅ UPLOAD TAR TO GITHUB RELEASE ✅ ✅ ✅
+      - name: Upload Backup TAR to GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.version.outputs.old_version }}
           name: Backup ${{ steps.version.outputs.old_version }}
-          files: ${{ env.ZIP_PATH }}
+          files: ${{ env.TAR_PATH }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

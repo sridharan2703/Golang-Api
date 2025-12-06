@@ -41,8 +41,13 @@ jobs:
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
           echo "🏷 Creating lightweight tag: $NEW_VERSION"
 
-          git tag "$NEW_VERSION"
-          git push origin "$NEW_VERSION"
+          if git rev-parse "$NEW_VERSION" >/dev/null 2>&1; then
+            echo "⚠️ Tag $NEW_VERSION already exists. Skipping tag creation."
+          else
+            git tag "$NEW_VERSION"
+            git push origin "$NEW_VERSION"
+            echo "✅ Tag $NEW_VERSION pushed successfully."
+          fi
 
       - name: Deploy on Production
         run: |

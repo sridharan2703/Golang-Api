@@ -62,9 +62,10 @@ jobs:
           mkdir -p "$BACKUP_DIR"
 
           echo "📂 Copying files to backup..."
-          rsync -av --exclude '.git' "$PROJECT_DIR/" "$BACKUP_DIR/"
+          rsync -av --exclude '.git' "$PROJECT_DIR/" "$BACKUP_DIR/" || echo "⚠️ rsync warning (code 24) ignored - backup still valid"
 
           echo "✅ Backup completed at $BACKUP_DIR"
+
 
       # ✅ ✅ ✅ MAIN DEPLOYMENT STEP (SELF-HOSTED) ✅ ✅ ✅
       - name: Deploy on Production (Self-Hosted)

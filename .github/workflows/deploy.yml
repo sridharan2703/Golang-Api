@@ -10,7 +10,7 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted   # ✅ RUNS ON YOUR SERVER (10.24.5.66)
 
     steps:
       - name: Checkout Code
@@ -18,7 +18,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ✅ Auto Increment Version
+      # ✅ AUTO VERSION
       - name: Auto Increment Version
         id: version
         run: |
@@ -35,7 +35,7 @@ jobs:
           echo "🚀 New version: $NEW_TAG"
           echo "new_version=$NEW_TAG" >> $GITHUB_OUTPUT
 
-      # ✅ Safe Tag Push (No Duplicate Failure)
+      # ✅ SAFE TAG PUSH
       - name: Create & Push Git Tag (Safe)
         run: |
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
@@ -49,48 +49,93 @@ jobs:
             echo "✅ Tag pushed successfully."
           fi
 
-      # ✅ ✅ ✅ REAL DEPLOYMENT VIA SSH ✅ ✅ ✅
-      - name: Deploy on Server via SSH
-        uses: appleboy/ssh-action@v1.0.0
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          script: |
-            echo "🌀 Deploying version ${{ steps.version.outputs.new_version }} ..."
+      # ✅ ✅ ✅ MAIN DEPLOYMENT STEP (SELF-HOSTED) ✅ ✅ ✅
+      - name: Deploy on Production (Self-Hosted)
+        run: |
+          NEW_VERSION="${{ steps.version.outputs.new_version }}"
+          echo "🌀 Deploying version $NEW_VERSION ..."
 
-            cd /home/user/hr_github || exit 1
+          cd /home/user/hr_github || exit 1
 
-            echo "📥 Pulling latest code..."
-            git fetch --all
-            git reset --hard origin/development
-            git pull origin development
+          echo "📥 Pulling latest code..."
+          git fetch --all
+          git reset --hard origin/development
+          git pull origin development
 
-            echo "📦 Cleaning dependencies..."
-            /usr/local/go/bin/go mod tidy
-            /usr/local/go/bin/go mod download
+          echo "📦 Cleaning dependencies..."
+          /usr/local/go/bin/go mod tidy
+          /usr/local/go/bin/go mod download
 
-            echo "📦 Building Go project..."
-            /usr/local/go/bin/go build -o hrserver main.go
+          echo "📦 Building Go project..."
+          /usr/local/go/bin/go build -o hrserver main.go
 
-            echo "🔍 Stopping old server on port 2703..."
-            PID=$(lsof -t -i:2703 || echo "")
-            if [ ! -z "$PID" ]; then
-              kill -9 $PID || true
-              sleep 2
-            fi
+          echo "🔍 Stopping old server on port 2703..."
+          PID=$(lsof -t -i:2703 || echo "")
 
-            echo "🚀 Starting new server..."
-            nohup ./hrserver > hr.log 2>&1 &
-
+          if [ ! -z "$PID" ]; then
+            echo "🔪 Killing process $PID ..."
+            kill -9 $PID || true
             sleep 3
-            NEW_PID=$(lsof -t -i:2703 || echo "")
-            if [ ! -z "$NEW_PID" ]; then
-              echo "✅ Server started successfully with PID: $NEW_PID"
-            else
-              echo "❌ Server failed to start"
-              tail -20 hr.log || true
-              exit 1
-            fi
+          else
+            echo "⚠ No process running on port 2703"
+          fi
 
-            echo "🎉 Deployment completed successfully!"
+          REMAINING_PID=$(lsof -t -i:2703 || echo "")
+          if [ ! -z "$REMAINING_PID" ]; then
+            echo "⚠️ Port still occupied by PID: $REMAINING_PID, force killing..."
+            kill -9 $REMAINING_PID || true
+            sleep 2
+          fi
+
+          echo "🚀 Starting new server..."
+          setsid ./hrserver > hr.log 2>&1 < /dev/null &
+
+          sleep 5
+          NEW_PID=$(lsof -t -i:2703 || echo "")
+          if [ ! -z "$NEW_PID" ]; then
+            echo "✅ Server started successfully with PID: $NEW_PID"
+          else
+            echo "❌ Server not detected on port 2703"
+            echo "📋 Checking for any hrserver processes..."
+            ps aux | grep hrserver | grep -v grep || echo "No hrserver process found"
+            echo "📄 Last 20 lines of log:"
+            tail -20 hr.log 2>/dev/null || echo "No log file yet"
+            exit 1
+          fi
+
+          echo "🎉 Deployment completed successfully!"
+
+      # ✅ ✅ ✅ FINAL VERIFICATION ✅ ✅ ✅
+      - name: Verify Server Status
+        run: |
+          cd /home/user/hr_github
+
+          echo "🔍 Final verification - checking server status..."
+          sleep 3
+
+          SERVER_PID=$(lsof -t -i:2703 || echo "")
+
+          if [ ! -z "$SERVER_PID" ]; then
+            echo "✅ Server is RUNNING"
+            echo "   PID: $SERVER_PID"
+            echo "   Port: 2703"
+
+            echo ""
+            echo "📊 Process details:"
+            ps -p $SERVER_PID -o pid,ppid,cmd,etime,user || true
+
+            echo ""
+            echo "📄 Recent logs (last 10 lines):"
+            tail -10 hr.log 2>/dev/null || echo "No logs available"
+            exit 0
+          else
+            echo "❌ Server is NOT RUNNING on port 2703"
+            echo ""
+            echo "🔍 Checking all hrserver processes:"
+            ps aux | grep "[h]rserver" || echo "No hrserver process found"
+
+            echo ""
+            echo "📄 Full log output:"
+            cat hr.log 2>/dev/null || echo "No log file found"
+            exit 1
+          fi

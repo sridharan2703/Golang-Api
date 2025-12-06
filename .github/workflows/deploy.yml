@@ -18,38 +18,47 @@ jobs:
         with:
           fetch-depth: 0
 
-      # ✅ AUTO VERSION
+      # ✅ ✅ ✅ CORRECT AUTO VERSION (ALWAYS PICKS HIGHEST TAG)
       - name: Auto Increment Version
         id: version
         run: |
-          git fetch --tags
+          echo "🔄 Fetching all tags..."
+          git fetch --tags --force
 
-          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v1.0.0")
-          echo "Last version: $LAST_TAG"
+          LAST_TAG=$(git tag --sort=-v:refname | head -n 1)
+
+          if [ -z "$LAST_TAG" ]; then
+            LAST_TAG="v1.0.0"
+          fi
+
+          echo "✅ Current latest version: $LAST_TAG"
 
           IFS='.' read -r MAJOR MINOR PATCH <<< "${LAST_TAG#v}"
           PATCH=$((PATCH + 1))
-          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
 
+          NEW_TAG="v$MAJOR.$MINOR.$PATCH"
           DATE_TIME=$(date +"%Y-%m-%d_%H-%M-%S")
 
+          echo "🚀 Next version: $NEW_TAG"
           echo "new_version=$NEW_TAG" >> $GITHUB_OUTPUT
           echo "backup_datetime=$DATE_TIME" >> $GITHUB_OUTPUT
 
-      # ✅ CREATE & PUSH NEW VERSION TAG (EACH VERSION)
+      # ✅ ✅ ✅ SAFE TAG CREATION (NO DUPLICATE)
       - name: Create & Push New Version Tag
         run: |
           NEW_VERSION="${{ steps.version.outputs.new_version }}"
 
+          echo "🏷 Creating tag: $NEW_VERSION"
+
           if git rev-parse "$NEW_VERSION" >/dev/null 2>&1; then
-            echo "⚠️ Tag already exists. Skipping."
+            echo "⚠️ $NEW_VERSION already exists. Skipping."
           else
             git tag "$NEW_VERSION"
             git push origin "$NEW_VERSION"
-            echo "✅ New version tag created: $NEW_VERSION"
+            echo "✅ Tag pushed: $NEW_VERSION"
           fi
 
-      # ✅ ✅ ✅ CREATE TAR BACKUP FOR *THIS VERSION ONLY* ✅ ✅ ✅
+      # ✅ ✅ ✅ BACKUP FOR THIS VERSION ONLY (DATEWISE)
       - name: Create TAR Backup (Per Version + Datewise)
         run: |
           VERSION="${{ steps.version.outputs.new_version }}"
@@ -67,7 +76,7 @@ jobs:
 
           echo "TAR_PATH=$TAR_PATH" >> $GITHUB_ENV
 
-      # ✅ ✅ ✅ UPLOAD BACKUP TO *THE SAME VERSION RELEASE* ✅ ✅ ✅
+      # ✅ ✅ ✅ UPLOAD BACKUP TO SAME VERSION RELEASE
       - name: Upload Backup TAR to GitHub Release (Per Version)
         uses: softprops/action-gh-release@v1
         with:
@@ -77,7 +86,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # ✅ ✅ ✅ DEPLOY ON SERVER (SELF-HOSTED) ✅ ✅ ✅
+      # ✅ ✅ ✅ DEPLOY ON SERVER (SELF-HOSTED)
       - name: Deploy on Production (Self-Hosted)
         run: |
           NEW_VERSION="${{ steps.version.outputs.new_version }}"

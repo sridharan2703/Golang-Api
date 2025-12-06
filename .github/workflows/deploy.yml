@@ -50,8 +50,14 @@ jobs:
           fi
 
       # ✅ ✅ ✅ CREATE DATEWISE ZIP BACKUP ✅ ✅ ✅
-      - name: Create ZIP Backup (Version + Datewise)
+     - name: Create ZIP Backup (Version + Datewise)
         run: |
+          # ✅ Auto-install zip if missing
+          if ! command -v zip &> /dev/null; then
+            echo "Installing zip..."
+            sudo yum install -y zip || sudo apt install -y zip
+          fi
+
           OLD_VERSION="${{ steps.version.outputs.old_version }}"
           BACKUP_TIME="${{ steps.version.outputs.backup_datetime }}"
 
@@ -65,6 +71,7 @@ jobs:
           zip -r "$ZIP_PATH" ./ -x ".git/*"
 
           echo "ZIP_PATH=$ZIP_PATH" >> $GITHUB_ENV
+
 
       # ✅ ✅ ✅ UPLOAD ZIP TO GITHUB RELEASE ✅ ✅ ✅
       - name: Upload Backup ZIP to GitHub Release
